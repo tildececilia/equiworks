@@ -377,8 +377,8 @@ async function loadMyStables(){
       map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false });
     });
     const units = [...map.values()];
-    iAmAdminSomewhere = units.some(u=> u.isAdmin);   // håll "Visa som"-behörigheten aktuell
-    return units;
+    iAmAdminSomewhere = units.some(u=> u.isAdmin);   // håll "Visa som"-behörigheten aktuell (räknas på de riktiga rollerna)
+    return applyPermView(units);
   }
   // Fallback (om db/org.sql inte körts än): gamla platta modellen
   const admin = await db.from("stable_admin").select("stable(*)").eq("email", session.email);
@@ -388,7 +388,14 @@ async function loadMyStables(){
   if(!mem.error) mem.data.forEach(r=>{ const s=r.profile && r.profile.stable; if(s && !map.has(s.id)) map.set(s.id, { ...s, orgId:s.id, orgName:s.name, isAdmin:false }); });
   const sm = await db.from("rs_student_member").select("rs_student(stable(*))").eq("email", session.email);
   if(!sm.error) (sm.data||[]).forEach(r=>{ const s=r.rs_student && r.rs_student.stable; if(s && !map.has(s.id)) map.set(s.id, { ...s, orgId:s.id, orgName:s.name, isAdmin:false }); });
-  return [...map.values()];
+  return applyPermView([...map.values()]);
+}
+/* "Visa som" styr även vilka stall som syns: i förhandsgranskning är man aldrig admin,
+   och som jourmedlem finns ridskolans delar inte med alls. */
+function applyPermView(units){
+  if(!permView) return units;
+  const out = units.map(u=> ({ ...u, isAdmin:false }));
+  return permView === "jour" ? out.filter(u=> u.kind !== "ridskola") : out;
 }
 function unitLabel(u){ return u.orgName && u.orgName !== u.name ? `${u.orgName} · ${u.name}` : u.name; }
 function kindLabel(k){ return k === "ridskola" ? "Ridskola" : "Jourschema"; }
@@ -457,13 +464,13 @@ async function refreshAdminFlag(){
 async function mySchoolPerm(stableId){
   const r = await db.rpc("my_school_perm", { sid: stableId });
   const real = (!r.error && r.data) ? r.data : ((await amIAdmin(stableId)) ? "admin" : "member");
-  if(permView && real === "admin") return permView;   // förhandsgranska en annan roll
+  if(permView && real === "admin") return permView === "jour" ? "member" : permView;   // förhandsgranska en annan roll
   return real;
 }
 function renderViewAsBar(){
   let bar = el("viewAsBar");
   if(!permView){ if(bar) bar.remove(); return; }
-  const lbl = { teacher:"ridlärare", chef:"chef", member:"stallpersonal/medlem" }[permView] || permView;
+  const lbl = { teacher:"ridlärare", chef:"chef", member:"stallpersonal/medlem", jour:"jourmedlem" }[permView] || permView;
   if(!bar){
     bar = document.createElement("div"); bar.id = "viewAsBar";
     bar.style.cssText = "position:sticky;top:0;z-index:20;background:var(--danger);color:#fff;text-align:center;padding:7px 12px;font-size:.85rem;font-weight:600;cursor:pointer";
@@ -478,17 +485,21 @@ async function viewAsDialog(){
   const opt = (v,l)=> `<button class="btn block${(permView||"admin")===v?" primary":""}" data-va="${v}" style="margin-top:8px">${l}</button>`;
   ov.innerHTML = `<div class="modal"><h3>Visa som</h3>
     <p>Förhandsgranska hur appen ser ut för en annan roll. Du är fortfarande inloggad som dig själv.</p>
-    ${opt("admin","Admin (min vanliga vy)")}${opt("teacher","Ridlärare")}${opt("chef","Chef")}${opt("member","Stallpersonal / medlem")}
+    ${opt("admin","Admin (min vanliga vy)")}${opt("teacher","Ridlärare")}${opt("chef","Chef")}${opt("member","Stallpersonal / medlem")}${opt("jour","Jourmedlem — ser bara jouren")}
+    <p class="meta2" style="margin-top:10px">Jourmedlem är någon som bara är med i jourstallet: ridskolans schema och inställningar syns inte alls.</p>
     <div class="modal-btns" style="margin-top:14px"><button class="btn" id="vaClose">Stäng</button></div></div>`;
   document.body.appendChild(ov);
   ov.querySelector("#vaClose").onclick = ()=> ov.remove();
   ov.querySelectorAll("[data-va]").forEach(b=> b.onclick = ()=>{
     const v = b.getAttribute("data-va");
     permView = v === "admin" ? null : v;
+    // en jourmedlem har inte ridskolan alls — lämna den vy man står i
+    if(permView === "jour") view = { name:"home", stableId:null };
     ov.remove(); renderViewAsBar(); render();
   });
 }
 async function amIAdmin(stableId){
+  if(permView) return false;   // i "Visa som" är man aldrig admin
   const r = await db.rpc("am_i_admin", { sid: stableId });
   if(!r.error) return !!r.data;
   // fallback om db/org.sql inte körts än
