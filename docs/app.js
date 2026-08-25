@@ -213,7 +213,11 @@ async function doCodeLogin(){
       mEl.innerHTML = msg("Fyll i din mejladress ovanför också — koden hör ihop med adressen.", "err");
       return;
     }
-    r = await db.auth.verifyOtp({ email, token: code, type: "email" });
+    // ny användare får "signup"-kod, befintlig "magiclink" — pröva tills en tar
+    for(const t of ["email", "signup", "magiclink"]){
+      r = await db.auth.verifyOtp({ email, token: code, type: t });
+      if(!r.error) break;
+    }
   }
   btn.classList.remove("spin"); btn.textContent = label;
   if(r.error){
