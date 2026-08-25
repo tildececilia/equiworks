@@ -446,6 +446,7 @@ async function renderStable(stableId){
       <h1 class="schedname" style="margin-bottom:6px">${esc(st.data.name)}</h1>
       <p class="sub" style="margin:0">${curAdmin ? '<span class="pill">Admin</span>' : '<span class="muted">Medlem</span>'}</p>`;
     await reloadStableData();
+    renderUnitDanger("stTreeCard", stableId, st.data.name);
   }catch(e){
     el("stableHead").innerHTML = msg("Kunde inte öppna stallet: " + (e.message||e), "err");
   }
@@ -498,6 +499,86 @@ async function viewAsDialog(){
     ov.remove(); renderViewAsBar(); render();
   });
 }
+/* Är jag den som skapade stallet? (org.owner_email — högsta nivån, över admin) */
+async function iAmOwnerOf(orgId){
+  if(!orgId || !session || permView) return false;
+  const r = await db.from("org").select("owner_email").eq("id", orgId).single();
+  return !r.error && !!r.data && (r.data.owner_email||"").toLowerCase() === session.email;
+}
+
+/* Farlig zon i delens inställningar: ägaren kan ta bort hela delen */
+async function renderUnitDanger(afterId, stableId, unitName){
+  const old = el("unitDanger"); if(old) old.remove();
+  const anchor = el(afterId); if(!anchor) return;
+  if(!(await iAmOwnerOf(curOrgId))) return;
+  const card = document.createElement("div");
+  card.className = "card"; card.id = "unitDanger";
+  card.innerHTML = `<div class="sublabel" style="margin-bottom:6px">Ta bort</div>
+    <p class="meta2" style="margin:0 0 12px">Tar bort hela den här delen och allt som ligger i den. Det går inte att ångra.</p>
+    <button class="btn danger-solid" id="delUnitBtn">Ta bort ${esc(unitName)}</button>`;
+  anchor.after(card);
+  el("delUnitBtn").onclick = ()=> deleteUnitDialog(stableId, unitName);
+}
+
+/* Bekräftelse med innehållsförteckning — namnet måste skrivas för att knappen ska gå att trycka på */
+async function deleteUnitDialog(stableId, unitName){
+  const stq = await db.from("stable").select("kind,org_id").eq("id", stableId).single();
+  if(stq.error){ alert("Kunde inte läsa delen: " + stq.error.message); return; }
+  const kind = stq.data.kind || "stall", orgId = stq.data.org_id || null;
+  const n = async (table)=>{ const r = await db.from(table).select("id").eq("stable_id", stableId); return r.error ? 0 : (r.data||[]).length; };
+  const rows = kind === "ridskola"
+    ? [["lektion","lektioner", await n("rs_group")], ["elev","elever", await n("rs_student")], ["häst","hästar", await n("rs_horse")], ["anställd","personal", await n("rs_staff")], ["arbetspass","arbetspass", await n("rs_task")]]
+    : [["profil","profiler", await n("profile")], ["häst","hästar", await n("horse")], ["jourgrupp","jourgrupper", await n("duty_group")], ["passtyp","passtyper", await n("pass_def")], ["bokning","bokningar", await n("booking")]];
+  const has = rows.filter(x=> x[2] > 0);
+  let isLast = false, orgName = "";
+  if(orgId){
+    const sib = await db.from("stable").select("id").eq("org_id", orgId);
+    isLast = !sib.error && (sib.data||[]).length <= 1;
+    const oq = await db.from("org").select("name").eq("id", orgId).single();
+    orgName = (!oq.error && oq.data && oq.data.name) || "";
+  }
+  const ov = document.createElement("div"); ov.className = "modal-ov";
+  ov.innerHTML = `<div class="modal"><h3>Ta bort ${esc(unitName)}</h3>
+    <p>Det här försvinner för alla i stallet och går inte att ångra:</p>
+    <div class="msg warn" style="margin-bottom:12px">${has.length
+      ? has.map(x=> `${x[2]} ${x[2] === 1 ? x[0] : x[1]}`).join(" · ") + " — och allt som hänger ihop med dem (scheman, sjukanmälningar, förfrågningar, chatt och inbjudningar)."
+      : "Delen är tom — inget innehåll att förlora."}</div>
+    ${isLast && orgName ? `<label class="chk"><input type="checkbox" id="du_org"> Ta bort hela stallet <b>${esc(orgName)}</b> också (det här är den sista delen)</label>` : ""}
+    <div class="field"><label class="fld">Skriv <b>${esc(unitName)}</b> för att bekräfta</label>
+      <input type="text" id="du_name" autocomplete="off" placeholder="${esc(unitName)}"></div>
+    <div id="du_msg"></div>
+    <div class="modal-btns"><button class="btn" id="du_cancel">Avbryt</button>
+      <button class="btn danger-solid" id="du_go" disabled style="opacity:.5">Ta bort för alltid</button></div></div>`;
+  document.body.appendChild(ov);
+  const go = ov.querySelector("#du_go"), inp = ov.querySelector("#du_name");
+  inp.oninput = ()=>{
+    const ok = inp.value.trim().toLowerCase() === unitName.trim().toLowerCase();
+    go.disabled = !ok; go.style.opacity = ok ? "" : ".5";
+  };
+  ov.querySelector("#du_cancel").onclick = ()=> ov.remove();
+  go.onclick = async ()=>{
+    const dropOrg = !!(ov.querySelector("#du_org") && ov.querySelector("#du_org").checked);
+    go.disabled = true; go.textContent = "Tar bort…";
+    // hela stallet tas bort via org (delarna följer med), annars bara den här delen
+    const r = dropOrg
+      ? await db.from("org").delete().eq("id", orgId).select("id")
+      : await db.from("stable").delete().eq("id", stableId).select("id");
+    if(r.error || !(r.data||[]).length){
+      go.disabled = false; go.textContent = "Ta bort för alltid";
+      el("du_msg").innerHTML = msg(r.error ? "Kunde inte ta bort: " + r.error.message
+        : "Databasen nekade borttagningen — bara den som skapade stallet får ta bort en del (har db/ta-bort-del.sql körts?)", "err");
+      return;
+    }
+    ov.remove();
+    curOrgId = null; stStableId = null; scStableId = null;
+    view = { name:"home", stableId:null };
+    await refreshAdminFlag();
+    render();
+    infoDialog(dropOrg ? `Stallet ${orgName} är borttaget.` : `${unitName} är borttagen.`, "Borttaget");
+  };
+  setTimeout(()=> inp.focus(), 50);
+}
+
 async function amIAdmin(stableId){
   if(permView) return false;   // i "Visa som" är man aldrig admin
   const r = await db.rpc("am_i_admin", { sid: stableId });
@@ -2707,6 +2788,7 @@ async function renderSchool(stableId){
       <p class="sub" style="margin:0">${permLbl[curPerm]||permLbl.member}</p>`;
     scData = { stable: st.data };
     await reloadSchool();
+    renderUnitDanger("scTreeCard", stableId, st.data.name);
   }catch(e){ el("scHead").innerHTML = msg("Kunde inte öppna ridskolan: " + (e.message||e), "err"); }
 }
 
