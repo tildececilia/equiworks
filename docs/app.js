@@ -167,7 +167,7 @@ function codeBox(){
     <button class="codetoggle" id="codeToggle" type="button">Har du en kod eller länk i mejlet? <span class="caret" id="codeCaret">▸</span></button>
     <div id="codeWrap" style="display:${loginStage === "code" ? "block" : "none"}">
       <p class="hint" style="margin:8px 0">Öppnade du appen från hemskärmen loggar länken in fel fönster. Skriv in koden ur mejlet — eller kopiera hela länken (håll in den i mejlet → Kopiera) och klistra in här.</p>
-      <div class="field"><input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 eller inklistrad länk"></div>
+      <div class="field"><input type="text" id="loginCode" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456 – eller klistra in länken"></div>
       <button class="btn block" id="codeBtn">Logga in här</button>
     </div>
   </div>`;
@@ -203,7 +203,9 @@ async function doCodeLogin(){
     const code = raw.replace(/\D/g, "");
     if(code.length !== 6){
       btn.classList.remove("spin"); btn.textContent = label;
-      mEl.innerHTML = msg("Koden är sex siffror. Fick du bara en länk i mejlet? Kopiera hela länken och klistra in den här.", "err");
+      mEl.innerHTML = /^https?:\/\//i.test(raw)
+        ? msg("Den där länken innehåller ingen inloggningsnyckel — den går via en mellanhand (klickspårning). Använd den sexsiffriga koden i mejlet i stället.", "err")
+        : msg("Skriv in den sexsiffriga koden ur mejlet, eller klistra in hela inloggningslänken.", "err");
       return;
     }
     if(!email.includes("@")){
