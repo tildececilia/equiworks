@@ -190,7 +190,8 @@ async function doCodeLogin(){
   const mEl = el("loginMsg"), btn = el("codeBtn");
   const raw = (el("loginCode").value||"").trim();
   const email = normEmail(el("email") ? el("email").value : "");
-  if(!raw){ mEl.innerHTML = msg("Skriv in koden ur mejlet, eller klistra in länken.", "err"); el("loginCode").focus(); return; }
+  if(!raw){ mEl.innerHTML = msg("Fältet är tomt — skriv in koden från mejlet här.", "err"); el("loginCode").focus(); return; }
+  if(raw.includes("{{")){ mEl.innerHTML = msg("Mejlet visar {{ .Token }} som text i stället för en kod — mallen i Supabase har inte sparats rätt. Använd länken i mejlet så länge.", "err"); return; }
   mEl.innerHTML = "";
   const label = btn.textContent; btn.classList.add("spin"); btn.textContent = "…";
   let r;
@@ -201,11 +202,11 @@ async function doCodeLogin(){
     r = await db.auth.verifyOtp({ token_hash: decodeURIComponent(link[2]), type: (kind && kind[1]) || "email" });
   } else {
     const code = raw.replace(/\D/g, "");
-    if(code.length !== 6){
+    if(code.length < 6 || code.length > 10){
       btn.classList.remove("spin"); btn.textContent = label;
       mEl.innerHTML = /^https?:\/\//i.test(raw)
-        ? msg("Den där länken innehåller ingen inloggningsnyckel — den går via en mellanhand (klickspårning). Använd den sexsiffriga koden i mejlet i stället.", "err")
-        : msg("Skriv in den sexsiffriga koden ur mejlet, eller klistra in hela inloggningslänken.", "err");
+        ? msg("Den där länken innehåller ingen inloggningsnyckel — den går via en mellanhand (klickspårning). Använd koden i mejlet i stället.", "err")
+        : msg("Det där ser inte ut som koden: jag hittade " + code.length + " siffror i \"" + raw.slice(0,24) + "\". Koden i mejlet är sex siffror i rad.", "err");
       return;
     }
     if(!email.includes("@")){
