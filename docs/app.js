@@ -3,6 +3,30 @@
 const cfg = window.STALLJOUR_CONFIG;
 const db = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
 
+/* Vilken version kör vi? Läses ur ?v= på script-taggen och jämförs med den
+   som ligger på servern — hemskärms-appar (iOS) cachar annars gammal kod för evigt. */
+const APP_V = +(((/[?&]v=(\d+)/.exec((document.currentScript && document.currentScript.src) || "")) || [])[1] || 0);
+async function checkForUpdate(){
+  if(!APP_V) return;
+  try{
+    const r = await fetch("index.html?ts=" + Date.now(), { cache: "no-store" });
+    const m = /app\.js\?v=(\d+)/.exec(await r.text());
+    if(m && +m[1] > APP_V) showUpdateBar(+m[1]);
+  }catch(e){}
+}
+function showUpdateBar(v){
+  if(el("updateBar")) return;
+  const bar = document.createElement("div");
+  bar.id = "updateBar";
+  bar.style.cssText = "position:sticky;top:0;z-index:21;background:var(--accent);color:var(--accent-ink);text-align:center;padding:8px 12px;font-size:.85rem;font-weight:600;cursor:pointer";
+  bar.textContent = "↻ Ny version av EquiWorks finns — tryck här för att uppdatera";
+  bar.onclick = ()=> location.replace(location.pathname + "?u=" + v);
+  document.querySelector("header.app").after(bar);
+}
+setInterval(checkForUpdate, 15 * 60 * 1000);
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) checkForUpdate(); });
+checkForUpdate();
+
 let session = null;            // {id, email} från Supabase Auth
 let view = { name: "home", stableId: null };
 let didAutoRoute = false;       // hoppa direkt till schemat om man bara har ett stall
