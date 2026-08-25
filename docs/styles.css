@@ -270,6 +270,10 @@ h1.title{font-family:var(--font-head);font-size:1.7rem;margin:0 0 6px}
 .pill{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
 
 .empty{color:var(--muted);font-size:.92rem;padding:8px 0}
+/* Logga in i just det här fönstret med kod eller inklistrad länk */
+.codebox{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
+.codetoggle{display:flex;align-items:center;gap:6px;width:100%;border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:.85rem;font-weight:600;padding:0;cursor:pointer}
+.codetoggle:hover{color:var(--ink)}
 .msg{padding:11px 14px;border-radius:11px;font-size:.9rem;margin-bottom:14px}
 .msg.err{background:rgba(192,69,59,.12);color:var(--danger)}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}

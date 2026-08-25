@@ -121,7 +121,8 @@ function renderLogin(){
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
         <button class="btn primary block" id="loginBtn">Skicka inloggningslänk</button>
-        <div class="hint">Klicka på länken i mejlet så loggas du in. Du förblir inloggad på den här enheten.</div>`
+        <div class="hint">Klicka på länken i mejlet så loggas du in. Du förblir inloggad på den här enheten.</div>
+        ${codeBox()}`
     : `
         <p class="sub">Starta ett nytt stall eller en ridskola — du blir admin.</p>
         <div id="loginMsg"></div>
@@ -154,7 +155,72 @@ function renderLogin(){
   el("segCreate").onclick = ()=>{ loginMode = "create"; renderLogin(); };
   el("loginBtn").onclick = doLogin;
   el("email").addEventListener("keydown", e=>{ if(e.key==="Enter") doLogin(); });
+  bindCodeBox();
   (loginMode === "create" ? el("cName2") : el("email")).focus();
+}
+
+/* Koda in dig i det här fönstret: mejlets länk loggar in webbläsaren den öppnas i,
+   vilket inte hjälper t.ex. en app sparad på iPhones hemskärm (egen lagring).
+   Här kan man i stället klistra in koden — eller hela länken — och logga in just här. */
+function codeBox(){
+  return `<div class="codebox">
+    <button class="codetoggle" id="codeToggle" type="button">Har du en kod eller länk i mejlet? <span class="caret" id="codeCaret">▸</span></button>
+    <div id="codeWrap" style="display:${loginStage === "code" ? "block" : "none"}">
+      <p class="hint" style="margin:8px 0">Öppnade du appen från hemskärmen loggar länken in fel fönster. Skriv in koden ur mejlet — eller kopiera hela länken (håll in den i mejlet → Kopiera) och klistra in här.</p>
+      <div class="field"><input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456 eller inklistrad länk"></div>
+      <button class="btn block" id="codeBtn">Logga in här</button>
+    </div>
+  </div>`;
+}
+function bindCodeBox(){
+  const t = el("codeToggle"); if(!t) return;
+  t.onclick = ()=>{
+    const w = el("codeWrap");
+    const open = w.style.display !== "none";
+    w.style.display = open ? "none" : "block";
+    loginStage = open ? "email" : "code";
+    el("codeCaret").textContent = open ? "▸" : "▾";
+    if(!open) el("loginCode").focus();
+  };
+  if(loginStage === "code") el("codeCaret").textContent = "▾";
+  el("codeBtn").onclick = doCodeLogin;
+  el("loginCode").addEventListener("keydown", e=>{ if(e.key==="Enter") doCodeLogin(); });
+}
+async function doCodeLogin(){
+  const mEl = el("loginMsg"), btn = el("codeBtn");
+  const raw = (el("loginCode").value||"").trim();
+  const email = normEmail(el("email") ? el("email").value : "");
+  if(!raw){ mEl.innerHTML = msg("Skriv in koden ur mejlet, eller klistra in länken.", "err"); el("loginCode").focus(); return; }
+  mEl.innerHTML = "";
+  const label = btn.textContent; btn.classList.add("spin"); btn.textContent = "…";
+  let r;
+  const link = raw.match(/[?&](token_hash|token)=([^&\s]+)/);
+  if(link){
+    // hela länken inklistrad — engångstoken plockas ur adressen
+    const kind = /[?&]type=([a-z_]+)/i.exec(raw);
+    r = await db.auth.verifyOtp({ token_hash: decodeURIComponent(link[2]), type: (kind && kind[1]) || "email" });
+  } else {
+    const code = raw.replace(/\D/g, "");
+    if(code.length !== 6){
+      btn.classList.remove("spin"); btn.textContent = label;
+      mEl.innerHTML = msg("Koden är sex siffror. Fick du bara en länk i mejlet? Kopiera hela länken och klistra in den här.", "err");
+      return;
+    }
+    if(!email.includes("@")){
+      btn.classList.remove("spin"); btn.textContent = label;
+      mEl.innerHTML = msg("Fyll i din mejladress ovanför också — koden hör ihop med adressen.", "err");
+      return;
+    }
+    r = await db.auth.verifyOtp({ email, token: code, type: "email" });
+  }
+  btn.classList.remove("spin"); btn.textContent = label;
+  if(r.error){
+    mEl.innerHTML = msg("Kunde inte logga in: " + r.error.message + " — koden gäller en timme och bara en gång. Skicka en ny länk om den hunnit gå ut.", "err");
+    return;
+  }
+  mEl.innerHTML = msg("Loggar in…", "ok");
+  el("loginCode").value = "";
+  // resten sköter onAuthStateChange, som renderar appen
 }
 
 async function doLogin(){
