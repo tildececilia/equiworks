@@ -1126,6 +1126,7 @@ async function renderSchedule(stableId){
     const mp = await db.from("profile_member").select("profile(id,name,stable_id)").eq("email", session.email); if(mp.error) throw mp.error;
     const myProfiles = (mp.data||[]).map(r=>r.profile).filter(x=> x && x.stable_id===stableId);
     schedCtx = { stable: st.data, groups: g.data, passes: sortPassesByTime(p.data), profiles: pr.data, myProfiles, actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
+    curAdmin = await amIAdmin(stableId);   // admin kan ta bort vem som helst från ett pass
     schedLogOpen = false;
     if(!weekStart2) weekStart2 = startOfWeek(new Date());
     drawScheduleShell();
@@ -1222,7 +1223,7 @@ async function drawGrid(keepScroll){
   if(keepScroll) window.scrollTo(0, scrollY);
 
   host.querySelectorAll("[data-book]").forEach(btn=> btn.onclick = ()=> bookCell(btn.getAttribute("data-book"), btn.getAttribute("data-date")));
-  host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof")); });
+  host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof"), btn.getAttribute("data-cmine") !== "0"); });
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
   const lt = host.querySelector("[data-logtoggle]");
   if(lt) lt.onclick = ()=>{
@@ -1286,7 +1287,9 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
     const mine = myIds.has(bk.profile_id);
     const canReq = !isPast && schedCtx.actingProfileId;
     const reqAttrs = canReq ? ` data-req="${bk.id}|${bk.profile_id}|${mine?1:0}" data-pinfo="${esc(p.name)}|${dISO}"` : "";
-    return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${canReq?(mine?"Ge bort passet":"Fråga om att ta över"):""}"><span class="cn">${esc((bk.profile&&bk.profile.name)||"?")}</span>${(mine&&!isPast)?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc((bk.profile&&bk.profile.name)||"?")}" title="Avboka">✕</button>`:""}</span>`;
+    const canRemove = (mine || curAdmin) && !isPast;
+    const who = (bk.profile && bk.profile.name) || "?";
+    return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${canReq?(mine?"Ge bort passet":"Fråga om att ta över"):""}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
   }).join("");
   const empty = (!list.length && !canBook) ? `<span class="sempty">–</span>` : "";
   const badge = cap>1 ? `<span class="scap ${full?"ok":"need"}">${list.length}/${cap}</span>` : "";
@@ -1337,16 +1340,21 @@ async function bookCell(passId, dISO){
   if(r.error){ alert("Kunde inte boka: " + r.error.message); return; }
   await drawGrid(true);
 }
-async function cancelBooking(id, info, profName){
-  let txt = "Är du säker på att du vill ta bort ditt pass?";
+async function cancelBooking(id, info, profName, mine){
+  if(mine === undefined) mine = true;
+  let txt = mine ? "Är du säker på att du vill ta bort ditt pass?"
+                 : `Vill du ta bort ${profName || "personen"} från passet?`;
   let pn = "", pd = "";
   if(info){
     const j = info.lastIndexOf("|");
     pn = info.slice(0, j); pd = info.slice(j+1);
     const d = new Date(pd + "T00:00:00");
-    txt = `Är du säker på att du vill ta bort ditt pass ${pn}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}?`;
+    const when = `${pn}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}`;
+    txt = mine
+      ? `Är du säker på att du vill ta bort ditt pass ${when}?`
+      : `Vill du ta bort ${profName || "personen"} från passet ${when}? Personen får inget meddelande — säg gärna till själv.`;
   }
-  if(!(await confirmDialog(txt, { title: "Ta bort pass", okText: "Ja, ta bort" }))) return;
+  if(!(await confirmDialog(txt, { title: mine ? "Ta bort pass" : "Ta bort från pass", okText: "Ja, ta bort" }))) return;
   const r = await db.from("booking").delete().eq("id", id);
   if(r.error){ alert("Kunde inte avboka: " + r.error.message); return; }
   logCancel(pn, pd, profName);
