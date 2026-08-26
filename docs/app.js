@@ -70,13 +70,21 @@ function isoWeekNumber(d){
   return 1+Math.round((t-f)/(7*24*3600*1000));
 }
 function weekIndexOf(monday){ const a=new Date(ROT_ANCHOR); a.setHours(0,0,0,0); const m=new Date(monday); m.setHours(0,0,0,0); return Math.round((m-a)/(7*24*3600*1000)); }
-function dutyGroupForWeek(monday, groups, offset){ const n=groups.length; if(!n) return null; const idx=((weekIndexOf(monday)+(offset||0))%n+n)%n; return groups[idx]; }
+function dutyGroupForWeek(monday, groups, offset){ const list=rotationGroups(groups); const n=list.length; if(!n) return null; const idx=((weekIndexOf(monday)+(offset||0))%n+n)%n; return list[idx]; }
+/* Bara grupper som är med i rotationen, i vald ordning */
+function rotationGroups(groups){
+  const all = (groups || (schedCtx ? schedCtx.groups : []) || []).slice()
+    .sort((a,b)=> (a.sort_order||0) - (b.sort_order||0));   // ordningen bestäms av sort_order, oavsett hämtningsordning
+  const med = all.filter(g=> g.in_rotation !== false);
+  return med.length ? med : all;   // ingen ikryssad → alla, så schemat aldrig blir tomt
+}
 function monthIndexOf(d){ return (d.getFullYear()-ROT_ANCHOR.getFullYear())*12 + d.getMonth(); }
 /* Vilken grupp har jouren ett visst datum — per vecka eller per kalendermånad */
 function dutyGroupForDate(d, groups, offset, basis){
-  const n = (groups||[]).length; if(!n) return null;
+  const list = rotationGroups(groups);
+  const n = list.length; if(!n) return null;
   const idx = basis === "month" ? monthIndexOf(d) + (offset||0) : weekIndexOf(startOfWeek(d)) + (offset||0);
-  return groups[((idx % n) + n) % n];
+  return list[((idx % n) + n) % n];
 }
 /* Periodens start (måndag eller den 1:a) enligt stallets rotationsbas */
 function periodStart(d){
@@ -90,7 +98,7 @@ function periodLabel(d){
 }
 /* Hur många gånger jourgruppen haft ansvaret — styr vems tur det är att välja först */
 function periodTurnNumber(ps){
-  const n = (schedCtx.groups||[]).length || 1;
+  const n = rotationGroups(schedCtx.groups).length || 1;
   const idx = schedCtx.stable.rotation_basis === "month" ? monthIndexOf(ps) : weekIndexOf(startOfWeek(ps));
   return Math.floor((idx + (schedCtx.stable.rotation_offset||0)) / n);
 }
@@ -1131,6 +1139,29 @@ function renderStableTree(){
       const per = basis === "month" ? "månaden" : "veckan";
       t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Jourrotation</span>
         <select id="rotbasis"><option value="week"${basis==="week"?" selected":""}>Ny grupp varje vecka</option><option value="month"${basis==="month"?" selected":""}>Ny grupp varje månad</option></select></div>`);
+      // Jourordning: vilka grupper som roterar, i vilken ordning, och vem som har jouren nu
+      const rotG = (stData.groups||[]).filter(g=> g.in_rotation !== false);
+      const nuIdx = (function(){
+        const n = rotG.length; if(!n) return -1;
+        const idx = basis === "month" ? monthIndexOf(new Date()) : weekIndexOf(startOfWeek(new Date()));
+        return (((idx + (st.rotation_offset||0)) % n) + n) % n;
+      })();
+      const nuNamn = nuIdx >= 0 ? (rotG[nuIdx]||{}).name : null;
+      t.push(`<div class="trow lvl1 titem" data-t="jourordning">${ic("users")} Jourordning <span class="meta2">${rotG.length} av ${(stData.groups||[]).length} grupper${nuNamn?` · ${esc(nuNamn)} nu`:""}</span> ${caret("jourordning")}</div>`);
+      if(stOpen.jourordning) t.push(`<div class="addbox lvl2">
+        <div class="addhead"><span>Jourordning</span></div>
+        <div class="meta2" style="margin-bottom:8px">Kryssa i vilka grupper som ska rulla i jouren och lägg dem i den ordning de ska gå. Markera sedan vilken grupp som har jouren den här ${basis === "month" ? "månaden" : "veckan"} — resten räknas fram därifrån.</div>
+        ${(stData.groups||[]).map((g,i)=>{
+          const med = g.in_rotation !== false;
+          const posIdx = rotG.findIndex(x=> x.id === g.id);
+          return `<div class="ordrow">
+            <label class="chk sm" style="padding:0;flex:1"><input type="checkbox" data-rotin="${g.id}"${med?" checked":""}>
+              <span class="cdot" style="background:${g.color||'#4e9e6e'}"></span> ${esc(g.name)}</label>
+            ${med ? `<label class="chk sm" style="padding:0" title="Har jouren nu"><input type="radio" name="rotnow" data-rotnow="${g.id}"${posIdx===nuIdx?" checked":""}> nu</label>` : ""}
+            <span class="tbtns"><button class="x" data-rotup="${g.id}"${i===0?" disabled":""} title="Flytta upp">↑</button><button class="x" data-rotdn="${g.id}"${i===(stData.groups||[]).length-1?" disabled":""} title="Flytta ned">↓</button></span>
+          </div>`;
+        }).join("") || `<div class="meta2">Inga grupper än.</div>`}
+      </div>`);
       // Deadline: alla pass tagna X dagar innan perioden börjar
       t.push(`<div class="trow lvl1 titem" data-t="deadline">${ic("clock")} Deadline <span class="meta2">${st.deadline_days != null ? st.deadline_days + " dagar innan" : "av"}</span> ${caret("deadline")}</div>`);
       if(stOpen.deadline) t.push(`<div class="addbox lvl2">
@@ -1187,6 +1218,42 @@ function renderStableTree(){
     renderStableTree();
     return true;
   };
+  host.querySelectorAll("[data-rotin]").forEach(cb=> cb.onchange = async (e)=>{
+    e.stopPropagation();
+    const r = await db.from("duty_group").update({ in_rotation: cb.checked }).eq("id", cb.getAttribute("data-rotin"));
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/jourordning.sql körts?)"); return; }
+    await reloadStableData();
+  });
+  host.querySelectorAll("[data-rotnow]").forEach(rb2=> rb2.onchange = async (e)=>{
+    e.stopPropagation();
+    const gid = rb2.getAttribute("data-rotnow");
+    const rot = (stData.groups||[]).filter(g=> g.in_rotation !== false);
+    const n = rot.length; if(!n) return;
+    const vald = rot.findIndex(g=> g.id === gid); if(vald < 0) return;
+    const basis = (stStableRow||{}).rotation_basis === "month" ? "month" : "week";
+    const idx = basis === "month" ? monthIndexOf(new Date()) : weekIndexOf(startOfWeek(new Date()));
+    const offset = (((vald - idx) % n) + n) % n;   // så att den valda gruppen har jouren just nu
+    const r = await db.from("stable").update({ rotation_offset: offset }).eq("id", stStableId);
+    if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
+    if(stStableRow) stStableRow.rotation_offset = offset;
+    if(schedCtx && schedCtx.stable && schedCtx.stable.id === stStableId) schedCtx.stable.rotation_offset = offset;
+    renderStableTree();
+  });
+  const flytta = async (gid, steg)=>{
+    const gs = (stData.groups||[]).slice();
+    const i = gs.findIndex(g=> g.id === gid); const j = i + steg;
+    if(i < 0 || j < 0 || j >= gs.length) return;
+    const tmp = gs[i]; gs[i] = gs[j]; gs[j] = tmp;
+    for(let k = 0; k < gs.length; k++){
+      if(gs[k].sort_order !== k){
+        const r = await db.from("duty_group").update({ sort_order: k }).eq("id", gs[k].id);
+        if(r.error){ alert("Kunde inte spara ordningen: " + r.error.message); return; }
+      }
+    }
+    await reloadStableData();
+  };
+  host.querySelectorAll("[data-rotup]").forEach(b2=> b2.onclick = (e)=>{ e.stopPropagation(); flytta(b2.getAttribute("data-rotup"), -1); });
+  host.querySelectorAll("[data-rotdn]").forEach(b2=> b2.onclick = (e)=>{ e.stopPropagation(); flytta(b2.getAttribute("data-rotdn"), 1); });
   const dlOn = el("dlOn");
   if(dlOn) dlOn.onchange = ()=> saveStable({ deadline_days: dlOn.checked ? 7 : null });
   const dlDays = el("dlDays");
@@ -2043,7 +2110,7 @@ function categoryTotals(monday){
 
 // Vilken gång i ordningen har gruppen jobbat (0, 1, 2 …) – styr rotationen av extrapass.
 function groupTurnNumber(monday){
-  const n = schedCtx.groups.length; if(!n) return 0;
+  const n = rotationGroups(schedCtx.groups).length; if(!n) return 0;
   return Math.floor((weekIndexOf(monday) + (schedCtx.stable.rotation_offset||0)) / n);
 }
 

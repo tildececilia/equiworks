@@ -63,6 +63,11 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .memchip .x2{border:none;background:rgba(0,0,0,.12);color:inherit;width:16px;height:16px;border-radius:999px;font-size:.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 :root[data-theme="dark"] .memchip .x2{background:rgba(255,255,255,.2)}
 .profhead .x{margin-left:4px}
+/* Jourordning: en rad per grupp med kryssruta, "nu"-val och pilar */
+.ordrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line)}
+.ordrow:first-of-type{border-top:none}
+.ordrow label.chk{gap:7px;font-size:.9rem}
+.ordrow .x[disabled]{opacity:.3;cursor:default}
 /* Kryssrutor på rad (veckodagar, grupper) i passformuläret */
 .pfboxes{display:flex;flex-wrap:wrap;gap:4px 14px}
 .pfboxes label.chk{padding:3px 0;font-size:.86rem;gap:6px}
