@@ -63,18 +63,31 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .memchip .x2{border:none;background:rgba(0,0,0,.12);color:inherit;width:16px;height:16px;border-radius:999px;font-size:.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 :root[data-theme="dark"] .memchip .x2{background:rgba(255,255,255,.2)}
 .profhead .x{margin-left:4px}
+/* Fördelning: turordningen med datum, under profilerna i måltalsrutan */
+.ordblock{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
+.ordline{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.84rem}
+.ordline .on-n{width:16px;color:var(--muted);font-weight:700;flex:0 0 auto}
+.ordline .on-h{flex:1 1 auto;min-width:0}
+.ordline .on-t{white-space:nowrap}
+.ordline.me .on-h{color:var(--accent);font-weight:700}
 /* Liten ikonknapp, t.ex. statistik nere till vänster i måltalsrutan */
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin-top:10px;
   border:1px solid var(--line);background:var(--card-2);color:var(--accent);border-radius:10px;cursor:pointer}
 .iconbtn:hover{background:var(--accent-soft)}
 .iconbtn .icn{width:18px;height:18px}
-/* Uppgifter under schemat: pass utan datum som gäller hela jourperioden */
-.taskitem{padding:9px 0;border-top:1px solid var(--line)}
-.taskitem:first-of-type{border-top:none;padding-top:0}
-.taskitem .ti-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.taskitem .ti-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:7px}
-.taskitem .ti-row .schips{display:flex;gap:6px;flex-wrap:wrap;flex:1;min-width:0}
-.taskitem .ti-row .btn{flex:0 0 auto}
+/* Uppgifter under schemat: en rad per uppgift, kompakt */
+.tlist{padding:10px 12px}
+.tlist .tl-head{font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
+.tlist .tl-head .meta2{text-transform:none;letter-spacing:0;font-weight:600;font-size:.72rem}
+.taskitem{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px;padding:4px 0;border-top:1px solid var(--line);font-size:.85rem;line-height:1.25}
+.taskitem:first-of-type{border-top:none}
+.taskitem .ti-name{flex:1 1 auto;min-width:0}
+.taskitem .ti-people{display:flex;gap:4px;flex-wrap:wrap}
+.taskitem .btn.sm.ti-take{padding:3px 10px;font-size:.76rem;border-radius:8px}
+.taskitem .ti-desc{flex-basis:100%;font-size:.74rem;margin:0;line-height:1.3}
+.taskitem .schip{font-size:.7rem;padding:1px 3px 1px 7px;gap:2px}
+.taskitem .schip .x2{width:13px;height:13px;font-size:.55rem}
+.taskitem .tagpill{font-size:.66rem;padding:1px 7px}
 /* Jourordning: en rad per grupp med kryssruta, "nu"-val och pilar */
 .ordrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--line)}
 .ordrow:first-of-type{border-top:none}
@@ -282,9 +295,10 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .sbook{margin-top:auto;font-size:1rem;line-height:1;padding:3px 0;border:1px dashed var(--line);border-radius:7px;background:transparent;color:var(--muted);font-weight:700;cursor:pointer}
 .sbook:hover{border-color:var(--accent);color:var(--accent)}
 .statwrap{display:flex;flex-direction:column;gap:2px}
-.statrow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:9px 0;border-top:1px solid var(--line)}
+/* Namnet på egen rad, kategorierna radas upp under */
+.statrow{display:flex;align-items:center;gap:5px 6px;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line)}
 .statrow:first-child{border-top:none}
-.statrow .sn{font-weight:700;min-width:96px}
+.statrow .sn{font-weight:700;flex-basis:100%;margin-bottom:1px}
 .statrow.me .sn{color:var(--accent)}
 .statcat{font-size:.8rem;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--card-2);border:1px solid var(--line);font-variant-numeric:tabular-nums}
 .statcat.done{background:var(--accent-soft);color:var(--accent);border-color:transparent}

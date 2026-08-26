@@ -1873,18 +1873,20 @@ async function taskList(tasks, days, myIds){
     }).join("");
     const full = mina.length >= cap;
     const kanBoka = schedCtx.actingProfileId && !full && !passerat && (rel.open || curAdmin);
-    const knapp = kanBoka ? `<button class="btn sm" data-booktask="${t.id}|${psISO}">Ta uppgiften</button>`
+    const knapp = kanBoka ? `<button class="btn sm ti-take" data-booktask="${t.id}|${psISO}" title="Ta uppgiften">Ta</button>`
       : (!full && !passerat && !rel.open ? `<span class="meta2">${rel.started ? "din tur " + esc(shortWhen(rel.mineAt)) : "öppnar " + esc(shortWhen(rel.openAt))}</span>` : "");
+    // knappen får kort text — uppgiftens namn står ju precis intill
     const kat = (schedCtx.cats||[]).find(c=> c.id === t.category_id);
     return `<div class="taskitem">
-      <div class="ti-head"><b>${esc(t.name)}</b>${kat?`<span class="tagpill">${esc(kat.name)}</span>`:""}
-        <span class="tagpill ${full?"":"st-pend"}">${mina.length}/${cap}</span></div>
-      ${(t.description||"").trim()?`<div class="meta2">${esc(t.description)}</div>`:""}
-      <div class="ti-row"><div class="schips">${chips || `<span class="meta2">Ingen har tagit den än</span>`}</div>${knapp}</div>
+      <span class="ti-name"><b>${esc(t.name)}</b>${kat?` <span class="tagpill">${esc(kat.name)}</span>`:""}</span>
+      <span class="ti-people">${chips || `<span class="meta2">ingen än</span>`}</span>
+      <span class="tagpill ${full?"":"st-pend"}">${mina.length}/${cap}</span>
+      ${knapp}
+      ${(t.description||"").trim()?`<span class="ti-desc meta2">${esc(t.description)}</span>`:""}
     </div>`;
   }).join("");
-  return `<div class="card">
-    <p class="sub" style="margin:0 0 8px">Uppgifter <span class="sectionhint">— gäller hela ${esc(periodLabel(ps))}</span></p>
+  return `<div class="card tlist">
+    <div class="tl-head">Uppgifter <span class="meta2">— hela ${esc(periodLabel(ps))}</span></div>
     ${rader}</div>`;
 }
 
@@ -1896,7 +1898,8 @@ function schedNotices(days, map, passes, myIds){
   if(!rel.always){
     const ps = rel.ps;
     if(!rel.started){
-      out += `<div class="card"><div class="msg warn" style="margin:0">🔒 Passen för ${esc(periodLabel(ps))} öppnar <b>${esc(shortWhen(rel.openAt))}</b>.</div></div>`;
+      out += `<div class="card"><div class="msg warn" style="margin:0">🔒 Passen för ${esc(periodLabel(ps))} öppnar <b>${esc(shortWhen(rel.openAt))}</b>.${
+        curAdmin ? `<div class="meta2" style="margin-top:5px">Du som admin kan boka redan nu — för alla andra är rutorna låsta.</div>` : ""}</div></div>`;
     } else if(rel.order.length && !rel.freeForAll){
       const nu = rel.order[Math.min(rel.turnIdx, rel.order.length-1)];
       const nuText = nu ? `${nu.name} (${nu.profileName})` : "";
@@ -1906,6 +1909,7 @@ function schedNotices(days, map, passes, myIds){
       if(rel.myIdx >= 0 && rel.turnIdx === rel.myIdx){ cls = "ok"; txt = `✅ Det är din tur att välja pass — du har förtur till ${esc(shortWhen(nextAt))}`; }
       else if(rel.open){ cls = "ok"; txt = `✅ Du kan boka. Just nu har <b>${esc(nuText)}</b> förtur.`; }
       else { cls = "warn"; txt = `⏳ <b>${esc(nuText)}</b> väljer just nu — din tur ${esc(shortWhen(rel.mineAt))}`; }
+      if(curAdmin && !rel.open) txt += `<div class="meta2" style="margin-top:5px">Du som admin kan boka redan nu, oavsett tur.</div>`;
       out += `<div class="card"><div class="msg ${cls}" style="margin:0">${txt}
         <div class="meta2" style="margin-top:6px">Ordning: ${koll}</div>
         <div class="meta2">Öppet för alla ${esc(shortWhen(rel.allOpenAt))}</div></div></div>`;
@@ -1997,7 +2001,7 @@ async function drawGrid(keepScroll){
   html += `</div></div>`;
   html += await taskList(tasks, days, myIds);
   if(schedPassSel) html += passPanel(schedPassSel, map, days);
-  html += renderStats(tgt, myIds);   // statistiken under schemat
+  html += renderStats(tgt, myIds, days[0]);   // statistiken under schemat
   html += `<div class="card">
     <div class="trow" data-logtoggle style="padding:6px 4px">${ic("list")} Händelselogg <span class="meta2">vecka ${isoWeekNumber(weekStart2)}</span> <span class="caret" style="margin-left:auto">${schedLogOpen?"▾":"▸"}</span></div>
     <div id="logBody" style="display:${schedLogOpen?"":"none"};margin-top:6px"></div>
@@ -2258,10 +2262,28 @@ function computeTargets(monday){
   return { duty, perProfile, cats };
 }
 
-function renderStats(tgt, myIds){
+/* Vem får välja först, och från när — visas under profilerna när fördelning är på */
+function releaseOrderBlock(d0, myIds){
+  if(!d0) return "";
+  const rel = releaseInfo(d0);
+  if(rel.always || !rel.order.length) return "";
+  const rader = rel.order.map((h,i)=>{
+    const nar = new Date(rel.openAt.getTime() + i*rel.hours*3600000);
+    const min = myIds.has(h.profileId), nu = rel.started && i === rel.turnIdx;
+    return `<div class="ordline${min?" me":""}"><span class="on-n">${i+1}.</span>
+      <span class="on-h">${esc(h.name)} <span class="meta2">${esc(h.profileName)}</span></span>
+      ${nu?`<span class="tagpill st-pend">väljer nu</span>`:""}<span class="on-t meta2">${esc(shortWhen(nar))}</span></div>`;
+  }).join("");
+  return `<div class="ordblock">
+    <div class="tl-head">Fördelning — vem väljer först i ${esc(periodLabel(rel.ps))}</div>
+    ${rader}
+    <div class="ordline"><span class="on-n">·</span><span class="on-h">Alla i stallet</span><span class="on-t meta2">${esc(shortWhen(rel.allOpenAt))}</span></div>
+  </div>`;
+}
+function renderStats(tgt, myIds, d0){
   if(!tgt) return "";
   const pids = Object.keys(tgt.perProfile);
-  if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p></div>`;
+  if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p>${releaseOrderBlock(d0, myIds)}</div>`;
   const catKeys = Object.keys(tgt.cats).filter(k=> tgt.cats[k].total > 0);
   const rows = pids.map(pid=>{
     const pr = tgt.perProfile[pid];
@@ -2278,6 +2300,7 @@ function renderStats(tgt, myIds){
   return `<div class="card">
     <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
     <div class="statwrap">${rows}</div>
+    ${releaseOrderBlock(d0, myIds)}
     <button class="iconbtn" id="statBtn" title="Statistik per häst">${ic("chart")}</button></div>`;
 }
 
