@@ -18,7 +18,10 @@ async function checkForUpdate(atStart){
     try{ done = !!sessionStorage.getItem("stalljour.updated"); }catch(e){}
     if(atStart && !done){
       try{ sessionStorage.setItem("stalljour.updated", String(m[1])); }catch(e){}
-      location.replace(location.pathname + "?u=" + m[1]);
+      // behåll övriga parametrar (t.ex. ?konto=jour som skiljer två hemskärms-appar åt)
+      const q = new URLSearchParams(location.search);
+      q.set("u", m[1]);
+      location.replace(location.pathname + "?" + q.toString());
       return;
     }
     showUpdateBar(+m[1]);
@@ -30,7 +33,11 @@ function showUpdateBar(v){
   bar.id = "updateBar";
   bar.style.cssText = "position:sticky;top:0;z-index:21;background:var(--accent);color:var(--accent-ink);text-align:center;padding:8px 12px;font-size:.85rem;font-weight:600;cursor:pointer";
   bar.textContent = "↻ Ny version av EquiWorks finns — tryck här för att uppdatera";
-  bar.onclick = ()=> location.replace(location.pathname + "?u=" + v);
+  bar.onclick = ()=>{
+    const q = new URLSearchParams(location.search);
+    q.set("u", v);
+    location.replace(location.pathname + "?" + q.toString());
+  };
   document.querySelector("header.app").after(bar);
 }
 setInterval(checkForUpdate, 15 * 60 * 1000);
