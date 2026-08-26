@@ -1877,12 +1877,15 @@ async function taskList(tasks, days, myIds){
       : (!full && !passerat && !rel.open ? `<span class="meta2">${rel.started ? "din tur " + esc(shortWhen(rel.mineAt)) : "öppnar " + esc(shortWhen(rel.openAt))}</span>` : "");
     // knappen får kort text — uppgiftens namn står ju precis intill
     const kat = (schedCtx.cats||[]).find(c=> c.id === t.category_id);
+    const harBesk = (t.description||"").trim();
+    const titel = harBesk
+      ? `<button class="ti-title" data-taskinfo="${t.id}" title="Visa beskrivning">${esc(t.name)} <span class="ti-i">ⓘ</span></button>`
+      : `<b>${esc(t.name)}</b>`;
     return `<div class="taskitem">
-      <span class="ti-name"><b>${esc(t.name)}</b>${kat?` <span class="tagpill">${esc(kat.name)}</span>`:""}</span>
+      <span class="ti-name">${titel}${kat?` <span class="tagpill">${esc(kat.name)}</span>`:""}</span>
       <span class="ti-people">${chips || `<span class="meta2">ingen än</span>`}</span>
       <span class="tagpill ${full?"":"st-pend"}">${mina.length}/${cap}</span>
       ${knapp}
-      ${(t.description||"").trim()?`<span class="ti-desc meta2">${esc(t.description)}</span>`:""}
     </div>`;
   }).join("");
   return `<div class="card tlist">
@@ -2012,6 +2015,10 @@ async function drawGrid(keepScroll){
   host.querySelectorAll("[data-book]").forEach(btn=> btn.onclick = ()=> bookCell(btn.getAttribute("data-book"), btn.getAttribute("data-date")));
   host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof"), btn.getAttribute("data-cmine") !== "0"); });
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
+  host.querySelectorAll("[data-taskinfo]").forEach(b2=> b2.onclick = ()=>{
+    const t = (schedCtx.passes||[]).find(x=> x.id === b2.getAttribute("data-taskinfo"));
+    if(t) infoDialog(t.description || "Ingen beskrivning än.", t.name);
+  });
   host.querySelectorAll("[data-booktask]").forEach(b2=> b2.onclick = ()=>{
     const [tid, dISO] = b2.getAttribute("data-booktask").split("|");
     bookCell(tid, dISO);
