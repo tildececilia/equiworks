@@ -228,6 +228,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 :root[data-theme="dark"] .sdl.done .dd{color:#123a26}
 .scell{border:1px solid var(--line);border-radius:9px;padding:4px;min-height:50px;display:flex;flex-direction:column;gap:4px;background:var(--card)}
 .scell.na{align-items:center;justify-content:center;color:#b9c5bd;border-style:dashed;min-height:0;background:transparent}
+/* Dag utan pass: smal rad med ett streck i stället för tomma rutor */
+.sdl.slim{padding:2px 4px;flex-direction:row;align-items:center;gap:6px;background:transparent;border-color:transparent}
+.sdl.slim .dn{font-size:.72rem;color:var(--muted)}
+.sdl.slim .dd{font-size:.66rem}
+.snone{display:flex;align-items:center;gap:8px;min-height:0;padding:0 4px;color:var(--muted);font-size:.68rem}
+.snone::after{content:"";flex:1;height:1px;background:var(--line)}
 .scell.mine{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 .scell.past{opacity:.5}
 .scaprow{display:flex;justify-content:flex-end}

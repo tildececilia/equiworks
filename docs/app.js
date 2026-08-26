@@ -1275,6 +1275,12 @@ async function drawGrid(keepScroll){
     const wknd = (d.getDay()===0 || d.getDay()===6);
     const applicable = passes.filter(p=> passApplies(p, d));
     const dayDone = applicable.length > 0 && applicable.every(p=> (map[p.id+"|"+dISO]||[]).length >= (p.capacity||1));
+    if(!applicable.length){
+      // inga pass den dagen — bara ett smalt streck i stället för en rad tomma rutor
+      html += `<div class="sdl slim${dISO===tISO?" today":""}"><span class="dn">${SHORT_DAYS[d.getDay()]}</span><span class="dd">${d.getDate()}/${d.getMonth()+1}</span></div>`;
+      html += `<div class="snone" style="grid-column:span ${passes.length}"><span>Inga pass</span></div>`;
+      return;
+    }
     html += `<div class="sdl${dISO===tISO?" today":""}${wknd?" weekend":""}${dayDone?" done":""}"><span class="dn">${SHORT_DAYS[d.getDay()]}</span><span class="dd">${d.getDate()}/${d.getMonth()+1}</span></div>`;
     passes.forEach(p=>{ html += scheduleCell(p, d, dISO, map, myIds, tISO); });
   });
