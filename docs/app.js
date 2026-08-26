@@ -6,12 +6,22 @@ const db = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
 /* Vilken version kör vi? Läses ur ?v= på script-taggen och jämförs med den
    som ligger på servern — hemskärms-appar (iOS) cachar annars gammal kod för evigt. */
 const APP_V = +(((/[?&]v=(\d+)/.exec((document.currentScript && document.currentScript.src) || "")) || [])[1] || 0);
-async function checkForUpdate(){
+async function checkForUpdate(atStart){
   if(!APP_V) return;
   try{
     const r = await fetch("index.html?ts=" + Date.now(), { cache: "no-store" });
     const m = /app\.js\?v=(\d+)/.exec(await r.text());
-    if(m && +m[1] > APP_V) showUpdateBar(+m[1]);
+    if(!m || +m[1] <= APP_V) return;
+    // vid start: hämta nya versionen direkt (en gång per flik, så det aldrig kan snurra).
+    // Sitter man redan och jobbar rycker vi inte undan sidan — då kommer rutan i stället.
+    let done = false;
+    try{ done = !!sessionStorage.getItem("stalljour.updated"); }catch(e){}
+    if(atStart && !done){
+      try{ sessionStorage.setItem("stalljour.updated", String(m[1])); }catch(e){}
+      location.replace(location.pathname + "?u=" + m[1]);
+      return;
+    }
+    showUpdateBar(+m[1]);
   }catch(e){}
 }
 function showUpdateBar(v){
@@ -25,7 +35,7 @@ function showUpdateBar(v){
 }
 setInterval(checkForUpdate, 15 * 60 * 1000);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) checkForUpdate(); });
-checkForUpdate();
+checkForUpdate(true);
 
 let session = null;            // {id, email} från Supabase Auth
 let view = { name: "home", stableId: null };
