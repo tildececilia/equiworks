@@ -71,16 +71,46 @@ function isoWeekNumber(d){
 }
 function weekIndexOf(monday){ const a=new Date(ROT_ANCHOR); a.setHours(0,0,0,0); const m=new Date(monday); m.setHours(0,0,0,0); return Math.round((m-a)/(7*24*3600*1000)); }
 function dutyGroupForWeek(monday, groups, offset){ const n=groups.length; if(!n) return null; const idx=((weekIndexOf(monday)+(offset||0))%n+n)%n; return groups[idx]; }
-function passApplies(p, d){ const g=d.getDay(); const wknd=(g===0||g===6);
-  if(p.day_rule==="weekend") return wknd;
-  if(p.day_rule==="weekday") return !wknd;
-  if(p.day_rule==="weekdays") return Array.isArray(p.weekdays) && p.weekdays.includes(((g+6)%7)+1);
+function passApplies(p, d){
+  // specialpass gäller bara sina egna datum
+  if(p.is_special){
+    const iso = isoDate(d);
+    return ((stData && stData.passDates) || (schedCtx && schedCtx.passDates) || [])
+      .some(x=> x.pass_id === p.id && x.pass_date === iso);
+  }
+  const g = d.getDay(), wknd = (g===0 || g===6), wd = ((g+6)%7)+1;   // wd: mån=1 … sön=7
+  // varannan vecka: jämna eller ojämna veckonummer
+  if(p.week_parity === "even" && isoWeekNumber(d) % 2 !== 0) return false;
+  if(p.week_parity === "odd"  && isoWeekNumber(d) % 2 === 0) return false;
+  if(p.day_rule === "weekend")  return wknd;
+  if(p.day_rule === "weekday")  return !wknd;
+  if(p.day_rule === "weekdays") return Array.isArray(p.weekdays) && p.weekdays.includes(wd);
+  if(p.day_rule === "monthday") return Array.isArray(p.month_days) && p.month_days.includes(d.getDate());
+  if(p.day_rule === "nth"){
+    if(!Array.isArray(p.weekdays) || !p.weekdays.includes(wd)) return false;
+    const nth = p.nth_week || 1;
+    if(nth === 5){   // "sista" veckodagen i månaden
+      const last = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
+      return d.getDate() + 7 > last;
+    }
+    return Math.floor((d.getDate() - 1) / 7) + 1 === nth;
+  }
   return true;
+}
+/* Får den här profilen ta passet? Pass utan gruppkoppling är öppna för alla. */
+function passOpenTo(p, profileId){
+  const links = ((stData && stData.passGroups) || (schedCtx && schedCtx.passGroups) || []).filter(x=> x.pass_id === p.id);
+  if(!links.length) return true;
+  const profs = (schedCtx && schedCtx.profiles) || (stData && stData.profiles) || [];
+  const prof = profs.find(x=> x.id === profileId);
+  const myGroups = new Set(((prof && prof.horse) || []).map(h=> h.group_id).filter(Boolean));
+  return links.some(l=> myGroups.has(l.group_id));
 }
 function timeKey(p){ const m=(p.start_time||"").trim().match(/^(\d{1,2}):(\d{2})/); return m ? (+m[1])*60 + (+m[2]) : 9999; }
 function sortPassesByTime(arr){ return arr.slice().sort((a,b)=>{ const d=timeKey(a)-timeKey(b); return d!==0 ? d : ((a.sort_order||0)-(b.sort_order||0)); }); }
 const TIME_OPTIONS = (()=>{ const a=[]; for(let h=0;h<24;h++) for(const m of [0,30]) a.push(String(h).padStart(2,"0")+":"+String(m).padStart(2,"0")); return a; })();
 function capOpts(sel){ let o=""; for(let i=1;i<=10;i++) o += `<option value="${i}"${i===sel?" selected":""}>${i}</option>`; return o; }
+function capOptsPairs(cur){ const out=[]; for(let i=1;i<=10;i++) out.push([i, i===1 ? "1 person" : i+" personer"]); return out; }
 let weekStart2 = null;   // schemats vecka (måndag)
 let schedCtx = null;     // {stable, groups, passes, myProfiles, actingProfileId}
 let schedLogOpen = false; // händelseloggen utfälld?
@@ -722,7 +752,17 @@ async function reloadStableData(){
   const err = g.error || c.error || p.error || pr.error;
   if(err){ el("stTreeCard").innerHTML = msg("Kunde inte hämta stallets data: " + err.message, "err"); return; }
   curGroups = g.data; curCats = c.data;
+  const passIds = (p.data||[]).map(x=> x.id);
+  let passDates = [], passGroups = [];
+  if(passIds.length){
+    const [pd, pg] = await Promise.all([
+      db.from("pass_date").select("*").in("pass_id", passIds),
+      db.from("pass_group").select("*").in("pass_id", passIds)
+    ]);
+    passDates = pd.error?[]:pd.data; passGroups = pg.error?[]:pg.data;
+  }
   stData = { groups: g.data, cats: c.data, passes: sortPassesByTime(p.data), profiles: pr.data,
+             passDates, passGroups,
              admins: ad.error ? [] : (ad.data||[]).map(x=> (x.email||"").toLowerCase()) };
   if(focusProfileId){
     const fp = stData.profiles.find(x=> x.id === focusProfileId);
@@ -741,6 +781,7 @@ function caret(k){ return `<span class="caret">${stOpen[k]?"▾":"▸"}</span>`;
 function stAddCtl(showKey, label, controlHtml, lvl, plain){
   if(!stOpen[showKey])
     return `<div class="tleaf lvl${lvl}" data-stshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+  if(typeof controlHtml === "function") controlHtml = controlHtml();   // byggs först när rutan är utfälld
   return `<div class="addbox lvl${lvl}">
     <div class="addhead"><span>${esc(label)}</span><button class="x" data-sthide="${showKey}" title="Stäng">✕</button></div>
     <div class="${plain ? "addfields" : "addhorse"}">${controlHtml}</div>
@@ -840,31 +881,130 @@ function groupNode(g){
 
 function passRow(p){
   if(curAdmin && p.id === editingPassId){
-    const catO = `<option value="">Ingen kategori</option>` + stData.cats.map(c=>`<option value="${c.id}"${c.id===p.category_id?" selected":""}>${esc(c.name)}</option>`).join("");
-    const dayO = [["all","Alla dagar"],["weekday","Vardagar"],["weekend","Helg"]].map(([v,l])=>`<option value="${v}"${v===p.day_rule?" selected":""}>${l}</option>`).join("");
-    const timO = TIME_OPTIONS.map(x=>`<option value="${x}"${x===p.start_time?" selected":""}>${x}</option>`).join("");
-    return `<div class="editrow lvl2">
-      <div class="field"><label class="fld">Namn</label><input type="text" id="ep_name_${p.id}" value="${esc(p.name)}"></div>
-      <div class="field"><label class="fld">Tid</label><select id="ep_time_${p.id}">${timO}</select></div>
-      <div class="field"><label class="fld">Kategori</label><select id="ep_cat_${p.id}">${catO}</select></div>
-      <div class="field"><label class="fld">Dagar</label><select id="ep_days_${p.id}">${dayO}</select></div>
-      <div class="field"><label class="fld">Antal personer</label><select id="ep_cap_${p.id}">${capOpts(p.capacity||1)}</select></div>
-      <div class="editbtns"><button class="btn primary sm" data-s="pass:${p.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>
-    </div>`;
+    if(!passForm || passForm.id !== p.id) passFormInit(p);
+    return `<div class="editrow lvl2">${passFields()}</div>`;
   }
-  const bits = [p.start_time, DAYLBL[p.day_rule]||"", (p.capacity>1?p.capacity+" pers":"")].filter(Boolean).join(" · ");
+  const bits = [p.start_time, passRuleText(p), (p.capacity>1?p.capacity+" pers":"")].filter(Boolean).join(" · ");
   const cat = p.category && p.category.name;
-  return `<div class="tleaf lvl2"><span><b>${esc(p.name)}</b> <span class="meta2">${esc(bits)}</span></span>${cat?`<span class="tagpill">${esc(cat)}</span>`:""}${tbtns("pass",p.id)}</div>`;
+  const grp = ((stData.passGroups||[]).filter(x=> x.pass_id===p.id)
+    .map(x=> ((stData.groups||[]).find(g=> g.id===x.group_id)||{}).name).filter(Boolean));
+  return `<div class="tleaf lvl2"><span><b>${esc(p.name)}</b> <span class="meta2">${esc(bits)}</span>${grp.length?` <span class="meta2">· bara ${esc(grp.join(", "))}</span>`:""}</span>${p.is_special?`<span class="tagpill st-pend">special</span>`:""}${cat?`<span class="tagpill">${esc(cat)}</span>`:""}${tbtns("pass",p.id)}</div>`;
 }
 
+/* ---- Passformulär: samma fält när man skapar och när man ändrar ----
+   passForm håller det man håller på att fylla i, så formuläret kan ritas om när
+   man byter regel utan att det man redan skrivit försvinner. */
+let passForm = null;
+function passFormInit(p){
+  passForm = p ? {
+    mode:"edit", id:p.id, name:p.name||"", start_time:p.start_time||"07:00",
+    category_id:p.category_id||"", capacity:p.capacity||1, day_rule:p.day_rule||"all",
+    week_parity:p.week_parity||"all", weekdays:(p.weekdays||[]).slice(),
+    month_days:(p.month_days||[]).join(", "), nth_week:p.nth_week||1,
+    is_special:!!p.is_special, description:p.description||"",
+    dates:((stData.passDates||[]).filter(x=> x.pass_id===p.id).map(x=> x.pass_date)).sort(),
+    groups:((stData.passGroups||[]).filter(x=> x.pass_id===p.id).map(x=> x.group_id))
+  } : {
+    mode:"new", id:null, name:"", start_time:"07:00", category_id:"", capacity:1, day_rule:"all",
+    week_parity:"all", weekdays:[], month_days:"", nth_week:1, is_special:false,
+    description:"", dates:[], groups:[]
+  };
+}
+function passCapture(){
+  if(!passForm) return;
+  const g = k=> el("pf_"+k);
+  ["name","start_time","category_id","capacity","day_rule","week_parity","month_days","nth_week","description"].forEach(k=>{
+    if(g(k)) passForm[k] = g(k).value;
+  });
+  if(g("is_special")) passForm.is_special = g("is_special").checked;
+  const wd = document.querySelectorAll("[data-pfwd]");
+  if(wd.length) passForm.weekdays = [...wd].filter(x=> x.checked).map(x=> +x.getAttribute("data-pfwd"));
+  const gr = document.querySelectorAll("[data-pfgrp]");
+  if(gr.length) passForm.groups = [...gr].filter(x=> x.checked).map(x=> x.getAttribute("data-pfgrp"));
+}
+function passFields(){
+  const f = passForm;
+  const sel = (id, opts, val)=> `<select id="pf_${id}" data-pfchange>${opts.map(([v,l])=>`<option value="${v}"${String(v)===String(val)?" selected":""}>${esc(String(l))}</option>`).join("")}</select>`;
+  const catO = [["","Ingen kategori"], ...stData.cats.map(c=> [c.id, c.name])];
+  const wdBoxes = `<div class="pfboxes">${[1,2,3,4,5,6,7].map(w=>
+    `<label class="chk sm"><input type="checkbox" data-pfwd="${w}" data-pfchange${f.weekdays.includes(w)?" checked":""}> ${WD_SHORT[w]}</label>`).join("")}</div>`;
+  let extra = "";
+  if(!f.is_special){
+    if(f.day_rule === "weekdays" || f.day_rule === "nth")
+      extra += `<div class="field"><label class="fld">Veckodagar</label>${wdBoxes}</div>`;
+    if(f.day_rule === "nth")
+      extra += `<div class="field"><label class="fld">Vilken vecka i månaden</label>${sel("nth_week", [[1,"Första"],[2,"Andra"],[3,"Tredje"],[4,"Fjärde"],[5,"Sista"]], f.nth_week)}</div>`;
+    if(f.day_rule === "monthday")
+      extra += `<div class="field"><label class="fld">Datum i månaden</label><input type="text" id="pf_month_days" value="${esc(f.month_days)}" placeholder="t.ex. 1, 15"></div>`;
+    extra += `<div class="field"><label class="fld">Veckor</label>${sel("week_parity", [["all","Alla veckor"],["even","Bara jämna veckor"],["odd","Bara ojämna veckor"]], f.week_parity)}</div>`;
+  } else {
+    const list = f.dates.length
+      ? f.dates.map(dt=>{ const d = new Date(dt+"T00:00:00");
+          return `<span class="datechip">${WD_SHORT[((d.getDay()+6)%7)+1]} ${d.getDate()}/${d.getMonth()+1}<button class="x" data-pfdatex="${dt}" title="Ta bort">✕</button></span>`; }).join("")
+      : `<span class="meta2">Inga datum valda än</span>`;
+    extra += `<div class="field"><label class="fld">Datum passet gäller</label>
+      <div class="datelist">${list}</div>
+      <div class="addhorse" style="margin-top:8px"><input type="date" id="pf_newdate"><button class="btn sm" data-pfdate="1">+ Lägg till datum</button></div></div>`;
+  }
+  const grpBoxes = stData.groups.length ? `<div class="field"><label class="fld">Grupper som får ta passet</label>
+    <div class="pfboxes">${stData.groups.map(g=>
+      `<label class="chk sm"><input type="checkbox" data-pfgrp="${g.id}" data-pfchange${f.groups.includes(g.id)?" checked":""}> ${esc(g.name)}</label>`).join("")}</div>
+    <div class="meta2" style="margin-top:4px">${f.groups.length ? "Bara ikryssade grupper kan boka passet." : "Ingen ikryssad = öppet för alla grupper."}</div></div>` : "";
+  const btn = f.mode === "edit"
+    ? `<div class="editbtns"><button class="btn primary sm" data-s="pass:${f.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>`
+    : `<button class="btn primary sm" data-add="pass">+ Lägg till pass</button>`;
+  return `<div class="field"><label class="fld">Namn</label><input type="text" id="pf_name" value="${esc(f.name)}" placeholder="t.ex. Morgonfodring"></div>
+    <div class="field"><label class="fld">Tid</label>${sel("start_time", TIME_OPTIONS.map(t=>[t,t]), f.start_time)}</div>
+    <div class="field"><label class="fld">Kategori</label>${sel("category_id", catO, f.category_id)}</div>
+    <div class="field"><label class="chk sm" style="padding:0"><input type="checkbox" id="pf_is_special" data-pfchange${f.is_special?" checked":""}> Specialpass — gäller bara valda datum</label></div>
+    ${f.is_special ? "" : `<div class="field"><label class="fld">Återkommer</label>${sel("day_rule", [["all","Alla dagar"],["weekday","Vardagar"],["weekend","Helg"],["weekdays","Valda veckodagar"],["monthday","Datum i månaden"],["nth","Viss veckodag i månaden"]], f.day_rule)}</div>`}
+    ${extra}
+    ${grpBoxes}
+    <div class="field"><label class="fld">Antal personer</label>${sel("capacity", capOptsPairs(f.capacity), f.capacity)}</div>
+    <div class="field"><label class="fld">Beskrivning — vad ska göras?</label><textarea id="pf_description" rows="2" placeholder="t.ex. hö till alla boxar, kolla vatten">${esc(f.description)}</textarea></div>
+    ${btn}`;
+}
 function addPassForm(){
-  const catO = `<option value="">Ingen kategori</option>` + stData.cats.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  return `<div class="field"><label class="fld">Namn</label><input type="text" id="in_pass_name" placeholder="t.ex. Morgonfodring"></div>
-    <div class="field"><label class="fld">Tid</label><select id="in_pass_time">${TIME_OPTIONS.map(t=>`<option value="${t}"${t==="07:00"?" selected":""}>${t}</option>`).join("")}</select></div>
-    <div class="field"><label class="fld">Kategori</label><select id="in_pass_cat">${catO}</select></div>
-    <div class="field"><label class="fld">Dagar</label><select id="in_pass_days"><option value="all">Alla dagar</option><option value="weekday">Vardagar</option><option value="weekend">Helg</option></select></div>
-    <div class="field"><label class="fld">Antal personer</label><select id="in_pass_cap">${capOpts(1)}</select></div>
-    <button class="btn primary sm" data-add="pass">+ Lägg till pass</button>`;
+  if(!passForm || passForm.mode !== "new") passFormInit(null);
+  return passFields();
+}
+/* Sparar passet plus dess specialdatum och gruppkoppling */
+async function passSave(){
+  passCapture();
+  const f = passForm;
+  const name = (f.name||"").trim();
+  if(!name){ await infoDialog("Ge passet ett namn.", "Namn saknas"); return null; }
+  let cap = parseInt(f.capacity, 10); if(isNaN(cap) || cap < 1) cap = 1;
+  const row = {
+    name, start_time: f.start_time, category_id: f.category_id || null,
+    capacity: cap, description: (f.description||"").trim() || null,
+    is_special: !!f.is_special,
+    day_rule: f.is_special ? "all" : f.day_rule,
+    week_parity: f.is_special ? "all" : f.week_parity,
+    weekdays: (!f.is_special && (f.day_rule === "weekdays" || f.day_rule === "nth")) ? f.weekdays : null,
+    month_days: (!f.is_special && f.day_rule === "monthday")
+      ? String(f.month_days||"").split(/[^0-9]+/).filter(Boolean).map(Number).filter(n=> n>=1 && n<=31) : null,
+    nth_week: (!f.is_special && f.day_rule === "nth") ? parseInt(f.nth_week,10)||1 : null
+  };
+  let id = f.id;
+  if(f.mode === "edit"){
+    const r = await db.from("pass_def").update(row).eq("id", id);
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/passregler.sql körts?)"); return null; }
+  } else {
+    row.stable_id = stStableId; row.sort_order = stData.passes.length;
+    const r = await db.from("pass_def").insert(row).select("id");
+    if(r.error){ alert("Kunde inte lägga till: " + r.error.message + " (har db/passregler.sql körts?)"); return null; }
+    id = (r.data && r.data[0] && r.data[0].id) || null;
+  }
+  if(id){
+    // datum och grupper skrivs om helt — enklast, och alltid i takt med formuläret
+    await db.from("pass_date").delete().eq("pass_id", id);
+    if(f.is_special && f.dates.length) await db.from("pass_date").insert(f.dates.map(dt=> ({ pass_id:id, pass_date:dt })));
+    await db.from("pass_group").delete().eq("pass_id", id);
+    if(f.groups.length) await db.from("pass_group").insert(f.groups.map(gid=> ({ pass_id:id, group_id:gid })));
+  }
+  passForm = null;
+  return true;
 }
 
 function catRow(c){
@@ -915,7 +1055,8 @@ function renderStableTree(){
     if(stOpen.pass){
       stData.passes.forEach(p=> t.push(passRow(p)));
       if(!stData.passes.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
-      if(curAdmin) t.push(stAddCtl("add_pass", "Lägg till pass", addPassForm(), 2, true));
+      // inget lägg till-formulär medan ett pass redigeras — de delar formulärstate
+      if(curAdmin && !editingPassId) t.push(stAddCtl("add_pass", "Lägg till pass", addPassForm, 2, true));
     }
     t.push(`<div class="trow lvl1" data-t="kategorier">${ic("tag")} Kategorier ${caret("kategorier")}</div>`);
     if(stOpen.kategorier){
@@ -935,6 +1076,18 @@ function renderStableTree(){
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
   host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
   host.querySelectorAll("[data-sthide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete stOpen[b.getAttribute("data-sthide")]; renderStableTree(); });
+  host.querySelectorAll("[data-pfchange]").forEach(n=> n.onchange = (e)=>{ e.stopPropagation(); passCapture(); renderStableTree(); });
+  host.querySelectorAll("[data-pfdate]").forEach(b=> b.onclick = (e)=>{
+    e.stopPropagation(); passCapture();
+    const v = (el("pf_newdate")||{}).value;
+    if(v && !passForm.dates.includes(v)){ passForm.dates.push(v); passForm.dates.sort(); }
+    renderStableTree();
+  });
+  host.querySelectorAll("[data-pfdatex]").forEach(b=> b.onclick = (e)=>{
+    e.stopPropagation(); passCapture();
+    passForm.dates = passForm.dates.filter(x=> x !== b.getAttribute("data-pfdatex"));
+    renderStableTree();
+  });
   host.querySelectorAll("[data-mv]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); moveProfileDialog(b.getAttribute("data-mv")); });
   host.querySelectorAll("[data-gs]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); groupStatsDialog(b.getAttribute("data-gs")); });
   host.querySelectorAll("[data-mkadm]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); toggleAdminForProfile(b.getAttribute("data-mkadm")); });
@@ -1083,14 +1236,14 @@ function moveProfileDialog(pid){
 function startEdit(spec){
   const [kind,id] = spec.split(":");
   editingPassId = editingHorseId = editingGroupId = editingCatId = editingProfileId = null;
-  if(kind==="pass") editingPassId = id;
+  if(kind==="pass"){ editingPassId = id; passFormInit((stData.passes||[]).find(x=> x.id === id) || null); }
   if(kind==="horse") editingHorseId = id;
   if(kind==="group") editingGroupId = id;
   if(kind==="cat") editingCatId = id;
   if(kind==="profile") editingProfileId = id;
   renderStableTree();
 }
-function cancelEdit(){ editingPassId = editingHorseId = editingGroupId = editingCatId = editingProfileId = null; renderStableTree(); }
+function cancelEdit(){ editingPassId = editingHorseId = editingGroupId = editingCatId = editingProfileId = null; passForm = null; renderStableTree(); }
 
 function confirmDialog(text, opts){
   opts = opts || {};
@@ -1133,8 +1286,8 @@ async function doSave(spec){
   if(kind==="cat"){ const name=(el("ec_name_"+id).value||"").trim(); if(!name) return; r=await db.from("category").update({name}).eq("id",id); }
   if(kind==="horse"){ r=await db.from("horse").update({ name:(el("eh_name_"+id).value||"").trim()||null, group_id: el("eh_group_"+id).value||null }).eq("id",id); }
   if(kind==="pass"){
-    let cap=parseInt(el("ep_cap_"+id).value,10); if(isNaN(cap)||cap<1) cap=1;
-    r=await db.from("pass_def").update({ name:el("ep_name_"+id).value.trim()||"Pass", start_time:el("ep_time_"+id).value, category_id:el("ep_cat_"+id).value||null, day_rule:el("ep_days_"+id).value, capacity:cap }).eq("id",id);
+    if(!(await passSave())) return;
+    editingPassId = null; await reloadStableData(); return;
   }
   if(!r) return;
   if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
@@ -1163,9 +1316,7 @@ async function doAdd(spec){
   if(kind==="horse"){ const name=(el("in_horse_"+a+"_"+b).value||"").trim(); const gid=el("in_horsegrp_"+a+"_"+b).value||null;
     if(!name){ await infoDialog("Skriv hästens namn i fältet först, välj grupp och tryck sedan på + Lägg till häst.", "Namn saknas"); return; }
     r = await db.from("horse").insert({ profile_id:b, name, group_id:gid }); }
-  if(kind==="pass"){ const name=(el("in_pass_name").value||"").trim(); if(!name) return;
-    let cap=parseInt(el("in_pass_cap").value,10); if(isNaN(cap)||cap<1) cap=1;
-    r = await db.from("pass_def").insert({ stable_id:stStableId, name, start_time:el("in_pass_time").value, category_id:el("in_pass_cat").value||null, day_rule:el("in_pass_days").value, capacity:cap, sort_order:stData.passes.length }); }
+  if(kind==="pass"){ if(!(await passSave())) return; delete stOpen.add_pass; await reloadStableData(); return; }
   if(!r) return;
   if(r.error){ alert("Kunde inte lägga till: " + r.error.message); return; }
   // fäll ihop kontrollen igen — nästa tillägg börjar med "Lägg till …"-raden
@@ -1176,7 +1327,24 @@ async function doAdd(spec){
 }
 
 /* ============ Pass-hjälpare ============ */
-const DAYLBL = { all:"Alla dagar", weekday:"Vardagar", weekend:"Helg", weekdays:"Valda dagar" };
+const DAYLBL = { all:"Alla dagar", weekday:"Vardagar", weekend:"Helg", weekdays:"Valda dagar",
+                 monthday:"Datum i månaden", nth:"Viss vecka i månaden" };
+const WD_SHORT = ["", "mån", "tis", "ons", "tor", "fre", "lör", "sön"];
+const NTH_LBL = { 1:"Första", 2:"Andra", 3:"Tredje", 4:"Fjärde", 5:"Sista" };
+/* Kort beskrivning av när ett pass återkommer, för raden i inställningarna */
+function passRuleText(p){
+  if(p.is_special){
+    const n = ((stData && stData.passDates)||[]).filter(x=> x.pass_id === p.id).length;
+    return "Specialpass · " + n + (n===1?" datum":" datum");
+  }
+  let t = DAYLBL[p.day_rule] || "Alla dagar";
+  if(p.day_rule === "weekdays") t = (p.weekdays||[]).map(w=> WD_SHORT[w]).join(", ") || "Valda dagar";
+  if(p.day_rule === "monthday") t = "den " + ((p.month_days||[]).join(", ") || "?") + " varje månad";
+  if(p.day_rule === "nth") t = (NTH_LBL[p.nth_week||1] || "Första") + " " + ((p.weekdays||[]).map(w=> WD_SHORT[w]).join("/") || "?") + " i månaden";
+  if(p.week_parity === "even") t += " · jämna veckor";
+  if(p.week_parity === "odd")  t += " · ojämna veckor";
+  return t;
+}
 /* ============ Schema-vy ============ */
 async function renderSchedule(stableId){
   const kindQ = await db.from("stable").select("kind").eq("id", stableId).single();
@@ -1190,7 +1358,17 @@ async function renderSchedule(stableId){
     const pr = await db.from("profile").select("id,name,horse(id,group_id)").eq("stable_id", stableId).order("created_at"); if(pr.error) throw pr.error;
     const mp = await db.from("profile_member").select("profile(id,name,stable_id)").eq("email", session.email); if(mp.error) throw mp.error;
     const myProfiles = (mp.data||[]).map(r=>r.profile).filter(x=> x && x.stable_id===stableId);
-    schedCtx = { stable: st.data, groups: g.data, passes: sortPassesByTime(p.data), profiles: pr.data, myProfiles, actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
+    const pids = (p.data||[]).map(x=> x.id);
+    let passDates = [], passGroups = [];
+    if(pids.length){
+      const [pdq, pgq] = await Promise.all([
+        db.from("pass_date").select("*").in("pass_id", pids),
+        db.from("pass_group").select("*").in("pass_id", pids)
+      ]);
+      passDates = pdq.error?[]:pdq.data; passGroups = pgq.error?[]:pgq.data;
+    }
+    schedCtx = { stable: st.data, groups: g.data, passes: sortPassesByTime(p.data), profiles: pr.data, myProfiles,
+                 passDates, passGroups, actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
     curAdmin = await amIAdmin(stableId);   // admin kan ta bort vem som helst från ett pass
     schedLogOpen = false;
     if(!weekStart2) weekStart2 = startOfWeek(new Date());
@@ -1353,7 +1531,8 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
   const full = list.length >= cap;
   const isPast = dISO < tISO;
   const mineHere = list.some(bk=> myIds.has(bk.profile_id));
-  const canBook = schedCtx.actingProfileId && !full && !isPast;
+  const mayTake = !schedCtx.actingProfileId || passOpenTo(p, schedCtx.actingProfileId);
+  const canBook = schedCtx.actingProfileId && !full && !isPast && mayTake;
   const chips = list.map(bk=>{
     const mine = myIds.has(bk.profile_id);
     const canReq = !isPast && schedCtx.actingProfileId;
@@ -1362,7 +1541,7 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
     const who = (bk.profile && bk.profile.name) || "?";
     return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${canReq?(mine?"Ge bort passet":"Fråga om att ta över"):""}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
   }).join("");
-  const empty = (!list.length && !canBook) ? `<span class="sempty">–</span>` : "";
+  const empty = (!list.length && !canBook) ? `<span class="sempty" title="${mayTake?"":"Passet är reserverat för andra grupper"}">${mayTake?"–":"·"}</span>` : "";
   const badge = cap>1 ? `<span class="scap ${full?"ok":"need"}">${list.length}/${cap}</span>` : "";
   const btn = canBook ? `<button class="sbook" data-book="${p.id}" data-date="${dISO}" title="Ta pass">+</button>` : "";
   const hu = (schedCtx.catTint || {})[p.category_id];
@@ -1382,6 +1561,10 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
 async function bookCell(passId, dISO){
   const pid = schedCtx.actingProfileId; if(!pid) return;
   const pass = schedCtx.passes.find(x=>x.id===passId);
+  if(pass && !passOpenTo(pass, pid)){
+    await infoDialog("Det här passet är reserverat för andra grupper.", "Kan inte bokas");
+    return;
+  }
   const d = new Date(dISO + "T00:00:00");
   const label = `${(pass && pass.name) || "passet"}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}`;
   let asked = false;
