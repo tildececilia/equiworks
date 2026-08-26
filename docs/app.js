@@ -1008,7 +1008,7 @@ function passCapture(){
 function passFields(){
   const f = passForm;
   const sel = (id, opts, val)=> `<select id="pf_${id}" data-pfchange>${opts.map(([v,l])=>`<option value="${v}"${String(v)===String(val)?" selected":""}>${esc(String(l))}</option>`).join("")}</select>`;
-  const catO = [["","Ingen kategori"], ...stData.cats.map(c=> [c.id, c.name])];
+  const catO = [["","Ingen kategori"], ...stData.cats.filter(c=> !!c.for_task === !!f.is_task).map(c=> [c.id, c.name])];
   const wdBoxes = `<div class="pfboxes">${[1,2,3,4,5,6,7].map(w=>
     `<label class="chk sm"><input type="checkbox" data-pfwd="${w}" data-pfchange${f.weekdays.includes(w)?" checked":""}> ${WD_SHORT[w]}</label>`).join("")}</div>`;
   let extra = "";
@@ -1067,6 +1067,10 @@ function addTaskForm(){
   if(!passForm || passForm.mode !== "new" || !passForm.is_task) passFormInit(null, true);
   return passFields();
 }
+/* Pekar ut vilken SQL-fil som saknas när databasen inte känner igen en kolumn */
+function sqlHint(f){
+  return f && f.is_task ? " — kör db/uppgifter.sql i Supabase först." : " — kör db/passregler.sql i Supabase först.";
+}
 /* Sparar passet plus dess specialdatum och gruppkoppling */
 async function passSave(){
   passCapture();
@@ -1089,11 +1093,11 @@ async function passSave(){
   let id = f.id;
   if(f.mode === "edit"){
     const r = await db.from("pass_def").update(row).eq("id", id);
-    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/passregler.sql körts?)"); return null; }
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + sqlHint(f)); return null; }
   } else {
     row.stable_id = stStableId; row.sort_order = stData.passes.length;
     const r = await db.from("pass_def").insert(row).select("id");
-    if(r.error){ alert("Kunde inte lägga till: " + r.error.message + " (har db/passregler.sql körts?)"); return null; }
+    if(r.error){ alert("Kunde inte lägga till: " + r.error.message + sqlHint(f)); return null; }
     id = (r.data && r.data[0] && r.data[0].id) || null;
   }
   if(id){
@@ -1107,12 +1111,13 @@ async function passSave(){
   return true;
 }
 
-function catRow(c){
+function catRow(c, lvl){
+  lvl = lvl || 2;
   if(curAdmin && c.id === editingCatId){
-    return `<div class="editrow lvl2"><div class="editname"><input type="text" id="ec_name_${c.id}" value="${esc(c.name)}">
+    return `<div class="editrow lvl${lvl}"><div class="editname"><input type="text" id="ec_name_${c.id}" value="${esc(c.name)}">
       <button class="btn primary sm" data-s="cat:${c.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div></div>`;
   }
-  return `<div class="tleaf lvl2">${ic("tag")} ${esc(c.name)}${tbtns("cat",c.id)}</div>`;
+  return `<div class="tleaf lvl${lvl}">${ic("tag")} ${esc(c.name)}${tbtns("cat",c.id)}</div>`;
 }
 
 function renderStableTree(){
@@ -1210,6 +1215,14 @@ function renderStableTree(){
       if(!vanliga.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
       // inget lägg till-formulär medan ett pass redigeras — de delar formulärstate
       if(curAdmin && !editingPassId) t.push(stAddCtl("add_pass", "Lägg till pass", addPassForm, 2, true));
+      t.push(`<div class="trow lvl2" data-t="kategorier">${ic("tag")} Kategorier <span class="meta2">för pass</span> ${caret("kategorier")}</div>`);
+      if(stOpen.kategorier){
+        const passCats = (stData.cats||[]).filter(c=> !c.for_task);
+        passCats.forEach(c=> t.push(catRow(c, 3)));
+        if(!passCats.length) t.push(`<div class="tleaf lvl3 tmuted">Inga kategorier för pass än</div>`);
+        if(curAdmin) t.push(stAddCtl("add_cat", "Lägg till kategori",
+          `<input type="text" id="in_cat" placeholder="Kategorins namn"><button class="btn sm" data-add="cat">+ Kategori</button>`, 3));
+      }
     }
     t.push(`<div class="trow lvl1" data-t="uppgifter">${ic("list")} Uppgifter ${caret("uppgifter")}</div>`);
     if(stOpen.uppgifter){
@@ -1217,13 +1230,14 @@ function renderStableTree(){
       upp.forEach(p=> t.push(passRow(p)));
       if(!upp.length) t.push(`<div class="tleaf lvl2 tmuted">Inga uppgifter än — uppgifter hör till hela jourperioden i stället för en viss dag</div>`);
       if(curAdmin && !editingPassId) t.push(stAddCtl("add_task", "Lägg till uppgift", addTaskForm, 2, true));
-    }
-    t.push(`<div class="trow lvl1" data-t="kategorier">${ic("tag")} Kategorier ${caret("kategorier")}</div>`);
-    if(stOpen.kategorier){
-      stData.cats.forEach(c=> t.push(catRow(c)));
-      if(!stData.cats.length) t.push(`<div class="tleaf lvl2 tmuted">Inga kategorier än</div>`);
-      if(curAdmin) t.push(stAddCtl("add_cat", "Lägg till kategori",
-        `<input type="text" id="in_cat" placeholder="Kategorins namn"><button class="btn sm" data-add="cat">+ Kategori</button>`, 2));
+      t.push(`<div class="trow lvl2" data-t="uppgkat">${ic("tag")} Kategorier <span class="meta2">för uppgifter</span> ${caret("uppgkat")}</div>`);
+      if(stOpen.uppgkat){
+        const taskCats = (stData.cats||[]).filter(c=> !!c.for_task);
+        taskCats.forEach(c=> t.push(catRow(c, 3)));
+        if(!taskCats.length) t.push(`<div class="tleaf lvl3 tmuted">Inga kategorier för uppgifter än</div>`);
+        if(curAdmin) t.push(stAddCtl("add_tcat", "Lägg till kategori",
+          `<input type="text" id="in_tcat" placeholder="Kategorins namn"><button class="btn sm" data-add="tcat">+ Kategori</button>`, 3));
+      }
     }
   }
   t.push(`</div>`);
@@ -1528,8 +1542,11 @@ async function doAdd(spec){
     const fld = el(kind === "profile2" ? "in_profile2" : "in_profile");
     const name=((fld && fld.value)||"").trim(); if(!name) return;
     r = await db.from("profile").insert({ stable_id:stStableId, name }); }
-  if(kind==="cat"){ const name=(el("in_cat").value||"").trim(); if(!name) return;
-    r = await db.from("category").insert({ stable_id:stStableId, name, sort_order:stData.cats.length }); }
+  if(kind==="cat" || kind==="tcat"){
+    const fld = el(kind === "tcat" ? "in_tcat" : "in_cat");
+    const name=((fld && fld.value)||"").trim(); if(!name) return;
+    r = await db.from("category").insert({ stable_id:stStableId, name, for_task: kind === "tcat", sort_order:stData.cats.length });
+    if(r && r.error && /for_task/.test(r.error.message||"")) { alert("Kunde inte lägga till: kör db/uppgiftskategorier.sql i Supabase först."); return; } }
   if(kind==="mail"){ const email=normEmail(el("in_mail_"+a+"_"+b).value); if(!email.includes("@")){ await infoDialog("Skriv en giltig mejladress i fältet först.", "Mejl saknas"); return; }
     r = await db.from("profile_member").insert({ profile_id:b, email });
     if(!r.error && email !== session.email){
@@ -1548,7 +1565,7 @@ async function doAdd(spec){
   if(!r) return;
   if(r.error){ alert("Kunde inte lägga till: " + r.error.message); return; }
   // fäll ihop kontrollen igen — nästa tillägg börjar med "Lägg till …"-raden
-  const shut = { group:"add_group", profile:"add_profile", profile2:"add_profile2", cat:"add_cat", pass:"add_pass",
+  const shut = { group:"add_group", profile:"add_profile", profile2:"add_profile2", cat:"add_cat", tcat:"add_tcat", pass:"add_pass", task:"add_task",
                  mail:`add_mail_${a}_${b}`, horse:`add_horse_${a}_${b}` }[kind];
   if(shut) delete stOpen[shut];
   await reloadStableData();
@@ -2259,11 +2276,9 @@ function renderStats(tgt, myIds){
     return `<div class="statrow${mine?" me":""}"><span class="sn">${esc(pr.name)}</span>${chips}</div>`;
   }).join("");
   return `<div class="card">
-    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <p class="sub" style="margin:0">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
-      <button class="btn sm" id="statBtn" style="margin-left:auto">${ic("chart")} Statistik</button>
-    </div>
-    <div class="statwrap">${rows}</div></div>`;
+    <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
+    <div class="statwrap">${rows}</div>
+    <button class="iconbtn" id="statBtn" title="Statistik per häst">${ic("chart")}</button></div>`;
 }
 
 /* ============ Toppknappar: Profil, Inställningar, Tema ============ */

@@ -63,6 +63,11 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .memchip .x2{border:none;background:rgba(0,0,0,.12);color:inherit;width:16px;height:16px;border-radius:999px;font-size:.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 :root[data-theme="dark"] .memchip .x2{background:rgba(255,255,255,.2)}
 .profhead .x{margin-left:4px}
+/* Liten ikonknapp, t.ex. statistik nere till vänster i måltalsrutan */
+.iconbtn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin-top:10px;
+  border:1px solid var(--line);background:var(--card-2);color:var(--accent);border-radius:10px;cursor:pointer}
+.iconbtn:hover{background:var(--accent-soft)}
+.iconbtn .icn{width:18px;height:18px}
 /* Uppgifter under schemat: pass utan datum som gäller hela jourperioden */
 .taskitem{padding:9px 0;border-top:1px solid var(--line)}
 .taskitem:first-of-type{border-top:none;padding-top:0}
