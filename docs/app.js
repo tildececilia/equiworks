@@ -1163,6 +1163,10 @@ async function doAdd(spec){
     r = await db.from("pass_def").insert({ stable_id:stStableId, name, start_time:el("in_pass_time").value, category_id:el("in_pass_cat").value||null, day_rule:el("in_pass_days").value, capacity:cap, sort_order:stData.passes.length }); }
   if(!r) return;
   if(r.error){ alert("Kunde inte lägga till: " + r.error.message); return; }
+  // fäll ihop kontrollen igen — nästa tillägg börjar med "Lägg till …"-raden
+  const shut = { group:"add_group", profile:"add_profile", profile2:"add_profile2", cat:"add_cat", pass:"add_pass",
+                 mail:`add_mail_${a}_${b}`, horse:`add_horse_${a}_${b}` }[kind];
+  if(shut) delete stOpen[shut];
   await reloadStableData();
 }
 
