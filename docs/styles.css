@@ -79,12 +79,16 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .tlist{padding:10px 12px}
 .tlist .tl-head{font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--accent);margin-bottom:4px}
 .tlist .tl-head .meta2{text-transform:none;letter-spacing:0;font-weight:600;font-size:.72rem}
-.taskitem{display:flex;align-items:center;flex-wrap:wrap;gap:3px 6px;padding:4px 0;border-top:1px solid var(--line);font-size:.85rem;line-height:1.25}
+/* En rad per uppgift som aldrig bryts: namnet kortas i stället, hela namnet finns i popupen */
+.taskitem{display:flex;align-items:center;flex-wrap:nowrap;gap:6px;padding:4px 0;border-top:1px solid var(--line);font-size:.85rem;line-height:1.25}
 .taskitem:first-of-type{border-top:none}
-.taskitem .ti-name{flex:1 1 auto;min-width:0}
-.taskitem .ti-people{display:flex;gap:4px;flex-wrap:wrap}
+.taskitem .ti-name{flex:1 1 40px;min-width:0}
+.taskitem .ti-people{display:flex;gap:4px;flex:0 1 auto;min-width:0;flex-wrap:wrap}
+.taskitem .tagpill{flex:0 0 auto}
 .taskitem .btn.sm.ti-take{padding:3px 10px;font-size:.76rem;border-radius:8px}
-.taskitem .ti-title{border:none;background:transparent;padding:0;font:inherit;font-weight:700;color:var(--ink);cursor:pointer;text-align:left}
+/* långa uppgiftsnamn bryts med bindestreck i stället för att knuffa ut knappen */
+.taskitem .ti-title{border:none;background:transparent;padding:0;font:inherit;font-weight:700;color:var(--ink);cursor:pointer;
+  text-align:left;white-space:normal;overflow-wrap:break-word;hyphens:auto}
 .taskitem .ti-title:hover{color:var(--accent)}
 .taskitem .ti-i{color:var(--accent);font-size:.8em}
 /* Den som tagit uppgiften ska synas tydligt */

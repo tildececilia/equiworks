@@ -1849,6 +1849,20 @@ async function horseStatsDialog(group){
   ov.onclick = (e)=>{ if(e.target === ov) ov.remove(); };
 }
 
+/* Uppgiftens detaljer: kategori och beskrivning, så raden i listan kan hållas kort */
+function taskInfoDialog(t){
+  const kat = (schedCtx.cats||[]).find(c=> c.id === t.category_id);
+  const besk = (t.description||"").trim();
+  const ov = document.createElement("div"); ov.className = "modal-ov";
+  ov.innerHTML = `<div class="modal"><h3>${esc(t.name)}</h3>
+    ${kat?`<div style="margin:0 0 10px"><span class="tagpill">${esc(kat.name)}</span></div>`:""}
+    <p style="margin:0">${besk ? esc(besk) : `<span class="meta2">Ingen beskrivning än.</span>`}</p>
+    <div class="modal-btns"><button class="btn primary" id="tiOk">Ok</button></div></div>`;
+  document.body.appendChild(ov);
+  const stang = ()=> ov.remove();
+  ov.querySelector("#tiOk").onclick = stang;
+  ov.onclick = (e)=>{ if(e.target === ov) stang(); };
+}
 /* Uppgifter: pass utan datum som gäller hela jourperioden.
    Bokningen sparas på periodens första dag, så den räknas som vilket pass som helst. */
 async function taskList(tasks, days, myIds){
@@ -1877,12 +1891,10 @@ async function taskList(tasks, days, myIds){
       : (!full && !passerat && !rel.open ? `<span class="meta2">${rel.started ? "din tur " + esc(shortWhen(rel.mineAt)) : "öppnar " + esc(shortWhen(rel.openAt))}</span>` : "");
     // knappen får kort text — uppgiftens namn står ju precis intill
     const kat = (schedCtx.cats||[]).find(c=> c.id === t.category_id);
-    const harBesk = (t.description||"").trim();
-    const titel = harBesk
-      ? `<button class="ti-title" data-taskinfo="${t.id}" title="Visa beskrivning">${esc(t.name)} <span class="ti-i">ⓘ</span></button>`
-      : `<b>${esc(t.name)}</b>`;
+    // kategori och beskrivning ligger i popupen — raden ska hållas kort
+    const titel = `<button class="ti-title" data-taskinfo="${t.id}" title="${esc(t.name)} — visa detaljer">${esc(t.name)}<span class="ti-i">ⓘ</span></button>`;
     return `<div class="taskitem">
-      <span class="ti-name">${titel}${kat?` <span class="tagpill">${esc(kat.name)}</span>`:""}</span>
+      <span class="ti-name">${titel}</span>
       <span class="ti-people">${chips || `<span class="meta2">ingen än</span>`}</span>
       <span class="tagpill ${full?"":"st-pend"}">${mina.length}/${cap}</span>
       ${knapp}
@@ -2017,7 +2029,7 @@ async function drawGrid(keepScroll){
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
   host.querySelectorAll("[data-taskinfo]").forEach(b2=> b2.onclick = ()=>{
     const t = (schedCtx.passes||[]).find(x=> x.id === b2.getAttribute("data-taskinfo"));
-    if(t) infoDialog(t.description || "Ingen beskrivning än.", t.name);
+    if(t) taskInfoDialog(t);
   });
   host.querySelectorAll("[data-booktask]").forEach(b2=> b2.onclick = ()=>{
     const [tid, dISO] = b2.getAttribute("data-booktask").split("|");
