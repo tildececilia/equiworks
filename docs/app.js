@@ -175,6 +175,7 @@ function passApplies(p, d){
 }
 /* Får den här profilen ta passet? Pass utan gruppkoppling är öppna för alla. */
 function passOpenTo(p, profileId){
+  if(!p.is_special) return true;   // vanliga pass tas av jourgruppen — ingen gruppspärr
   const links = ((stData && stData.passGroups) || (schedCtx && schedCtx.passGroups) || []).filter(x=> x.pass_id === p.id);
   if(!links.length) return true;
   const profs = (schedCtx && schedCtx.profiles) || (stData && stData.profiles) || [];
@@ -968,8 +969,8 @@ function passRow(p){
   }
   const bits = [p.start_time, passRuleText(p), (p.capacity>1?p.capacity+" pers":"")].filter(Boolean).join(" · ");
   const cat = p.category && p.category.name;
-  const grp = ((stData.passGroups||[]).filter(x=> x.pass_id===p.id)
-    .map(x=> ((stData.groups||[]).find(g=> g.id===x.group_id)||{}).name).filter(Boolean));
+  const grp = (p.is_special ? (stData.passGroups||[]).filter(x=> x.pass_id===p.id) : [])
+    .map(x=> ((stData.groups||[]).find(g=> g.id===x.group_id)||{}).name).filter(Boolean);
   return `<div class="tleaf lvl2"><span><b>${esc(p.name)}</b> <span class="meta2">${esc(bits)}</span>${grp.length?` <span class="meta2">· bara ${esc(grp.join(", "))}</span>`:""}</span>${p.is_special?`<span class="tagpill st-pend">special</span>`:""}${cat?`<span class="tagpill">${esc(cat)}</span>`:""}${tbtns("pass",p.id)}</div>`;
 }
 
@@ -977,9 +978,9 @@ function passRow(p){
    passForm håller det man håller på att fylla i, så formuläret kan ritas om när
    man byter regel utan att det man redan skrivit försvinner. */
 let passForm = null;
-function passFormInit(p){
+function passFormInit(p, isTask){
   passForm = p ? {
-    mode:"edit", id:p.id, name:p.name||"", start_time:p.start_time||"07:00",
+    mode:"edit", id:p.id, is_task:!!p.is_task, name:p.name||"", start_time:p.start_time||"07:00",
     category_id:p.category_id||"", capacity:p.capacity||1, day_rule:p.day_rule||"all",
     week_parity:p.week_parity||"all", weekdays:(p.weekdays||[]).slice(),
     month_days:(p.month_days||[]).join(", "), nth_week:p.nth_week||1,
@@ -987,7 +988,7 @@ function passFormInit(p){
     dates:((stData.passDates||[]).filter(x=> x.pass_id===p.id).map(x=> x.pass_date)).sort(),
     groups:((stData.passGroups||[]).filter(x=> x.pass_id===p.id).map(x=> x.group_id))
   } : {
-    mode:"new", id:null, name:"", start_time:"07:00", category_id:"", capacity:1, day_rule:"all",
+    mode:"new", id:null, is_task:!!isTask, name:"", start_time:"07:00", category_id:"", capacity:1, day_rule:"all",
     week_parity:"all", weekdays:[], month_days:"", nth_week:1, is_special:false,
     description:"", dates:[], groups:[]
   };
@@ -1028,10 +1029,22 @@ function passFields(){
       <div class="datelist">${list}</div>
       <div class="addhorse" style="margin-top:8px"><input type="date" id="pf_newdate"><button class="btn sm" data-pfdate="1">+ Lägg till datum</button></div></div>`;
   }
-  const grpBoxes = stData.groups.length ? `<div class="field"><label class="fld">Grupper som får ta passet</label>
+  // Gruppval hör bara till specialpass — vanliga pass tas av gruppen som har jouren den perioden
+  const grpBoxes = (f.is_special && stData.groups.length) ? `<div class="field"><label class="fld">Vilka grupper får ta passet?</label>
     <div class="pfboxes">${stData.groups.map(g=>
       `<label class="chk sm"><input type="checkbox" data-pfgrp="${g.id}" data-pfchange${f.groups.includes(g.id)?" checked":""}> ${esc(g.name)}</label>`).join("")}</div>
-    <div class="meta2" style="margin-top:4px">${f.groups.length ? "Bara ikryssade grupper kan boka passet." : "Ingen ikryssad = öppet för alla grupper."}</div></div>` : "";
+    <div class="meta2" style="margin-top:4px">${f.groups.length ? "Bara ikryssade grupper kan boka passet." : "Ingen ikryssad = alla i stallet får ta det."}</div></div>` : "";
+  if(f.is_task){
+    const btn2 = f.mode === "edit"
+      ? `<div class="editbtns"><button class="btn primary sm" data-s="pass:${f.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>`
+      : `<button class="btn primary sm" data-add="task">+ Lägg till uppgift</button>`;
+    return `<div class="field"><label class="fld">Namn</label><input type="text" id="pf_name" value="${esc(f.name)}" placeholder="t.ex. Städa sadelkammaren"></div>
+      <div class="field"><label class="fld">Kategori</label>${sel("category_id", catO, f.category_id)}</div>
+      <div class="field"><label class="fld">Antal personer</label>${sel("capacity", capOptsPairs(f.capacity), f.capacity)}</div>
+      <div class="field"><label class="fld">Beskrivning — vad ska göras?</label><textarea id="pf_description" rows="2" placeholder="t.ex. sopa golvet och häng upp allt">${esc(f.description)}</textarea></div>
+      <div class="meta2" style="margin-bottom:10px">Uppgiften gäller hela jourperioden och visas i listan under schemat.</div>
+      ${btn2}`;
+  }
   const btn = f.mode === "edit"
     ? `<div class="editbtns"><button class="btn primary sm" data-s="pass:${f.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>`
     : `<button class="btn primary sm" data-add="pass">+ Lägg till pass</button>`;
@@ -1047,7 +1060,11 @@ function passFields(){
     ${btn}`;
 }
 function addPassForm(){
-  if(!passForm || passForm.mode !== "new") passFormInit(null);
+  if(!passForm || passForm.mode !== "new" || passForm.is_task) passFormInit(null);
+  return passFields();
+}
+function addTaskForm(){
+  if(!passForm || passForm.mode !== "new" || !passForm.is_task) passFormInit(null, true);
   return passFields();
 }
 /* Sparar passet plus dess specialdatum och gruppkoppling */
@@ -1058,15 +1075,16 @@ async function passSave(){
   if(!name){ await infoDialog("Ge passet ett namn.", "Namn saknas"); return null; }
   let cap = parseInt(f.capacity, 10); if(isNaN(cap) || cap < 1) cap = 1;
   const row = {
-    name, start_time: f.start_time, category_id: f.category_id || null,
+    name, is_task: !!f.is_task,
+    start_time: f.is_task ? null : f.start_time, category_id: f.category_id || null,
     capacity: cap, description: (f.description||"").trim() || null,
-    is_special: !!f.is_special,
-    day_rule: f.is_special ? "all" : f.day_rule,
-    week_parity: f.is_special ? "all" : f.week_parity,
-    weekdays: (!f.is_special && (f.day_rule === "weekdays" || f.day_rule === "nth")) ? f.weekdays : null,
-    month_days: (!f.is_special && f.day_rule === "monthday")
+    is_special: !f.is_task && !!f.is_special,
+    day_rule: (f.is_task || f.is_special) ? "all" : f.day_rule,
+    week_parity: (f.is_task || f.is_special) ? "all" : f.week_parity,
+    weekdays: (!f.is_task && !f.is_special && (f.day_rule === "weekdays" || f.day_rule === "nth")) ? f.weekdays : null,
+    month_days: (!f.is_task && !f.is_special && f.day_rule === "monthday")
       ? String(f.month_days||"").split(/[^0-9]+/).filter(Boolean).map(Number).filter(n=> n>=1 && n<=31) : null,
-    nth_week: (!f.is_special && f.day_rule === "nth") ? parseInt(f.nth_week,10)||1 : null
+    nth_week: (!f.is_task && !f.is_special && f.day_rule === "nth") ? parseInt(f.nth_week,10)||1 : null
   };
   let id = f.id;
   if(f.mode === "edit"){
@@ -1083,7 +1101,7 @@ async function passSave(){
     await db.from("pass_date").delete().eq("pass_id", id);
     if(f.is_special && f.dates.length) await db.from("pass_date").insert(f.dates.map(dt=> ({ pass_id:id, pass_date:dt })));
     await db.from("pass_group").delete().eq("pass_id", id);
-    if(f.groups.length) await db.from("pass_group").insert(f.groups.map(gid=> ({ pass_id:id, group_id:gid })));
+    if(f.is_special && f.groups.length) await db.from("pass_group").insert(f.groups.map(gid=> ({ pass_id:id, group_id:gid })));
   }
   passForm = null;
   return true;
@@ -1187,10 +1205,18 @@ function renderStableTree(){
     }
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
-      stData.passes.forEach(p=> t.push(passRow(p)));
-      if(!stData.passes.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
+      const vanliga = (stData.passes||[]).filter(p=> !p.is_task);
+      vanliga.forEach(p=> t.push(passRow(p)));
+      if(!vanliga.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
       // inget lägg till-formulär medan ett pass redigeras — de delar formulärstate
       if(curAdmin && !editingPassId) t.push(stAddCtl("add_pass", "Lägg till pass", addPassForm, 2, true));
+    }
+    t.push(`<div class="trow lvl1" data-t="uppgifter">${ic("list")} Uppgifter ${caret("uppgifter")}</div>`);
+    if(stOpen.uppgifter){
+      const upp = (stData.passes||[]).filter(p=> p.is_task);
+      upp.forEach(p=> t.push(passRow(p)));
+      if(!upp.length) t.push(`<div class="tleaf lvl2 tmuted">Inga uppgifter än — uppgifter hör till hela jourperioden i stället för en viss dag</div>`);
+      if(curAdmin && !editingPassId) t.push(stAddCtl("add_task", "Lägg till uppgift", addTaskForm, 2, true));
     }
     t.push(`<div class="trow lvl1" data-t="kategorier">${ic("tag")} Kategorier ${caret("kategorier")}</div>`);
     if(stOpen.kategorier){
@@ -1466,7 +1492,8 @@ async function doDelete(spec){
   if(kind==="profile"){ const p=stData.profiles.find(x=>x.id===id); text=`Du håller på att ta bort profilen "${p?p.name:""}" med alla dess hästar och bokningar.`; q=()=>db.from("profile").delete().eq("id",id); }
   if(kind==="horse"){ let hn="Häst"; stData.profiles.forEach(p=>(p.horse||[]).forEach(h=>{ if(h.id===id) hn=h.name||"Häst"; })); text=`Du håller på att ta bort hästen "${hn}".`; q=()=>db.from("horse").delete().eq("id",id); }
   if(kind==="mail"){ const j=id.indexOf("|"); const pid=id.slice(0,j); const email=decodeURIComponent(id.slice(j+1)); text=`Du håller på att ta bort mejladressen ${email} från profilen.`; q=()=>db.from("profile_member").delete().eq("profile_id",pid).eq("email",email); }
-  if(kind==="pass"){ const p=stData.passes.find(x=>x.id===id); text=`Du håller på att ta bort passet "${p?p.name:""}". Alla bokningar på passet försvinner.`; q=()=>db.from("pass_def").delete().eq("id",id); }
+  if(kind==="pass"){ const p=stData.passes.find(x=>x.id===id); const vad = p&&p.is_task ? "uppgiften" : "passet";
+    text=`Du håller på att ta bort ${vad} "${p?p.name:""}". Alla bokningar på ${vad} försvinner.`; q=()=>db.from("pass_def").delete().eq("id",id); }
   if(kind==="cat"){ const c=stData.cats.find(x=>x.id===id); text=`Du håller på att ta bort kategorin "${c?c.name:""}". Pass i kategorin blir utan kategori.`; q=()=>db.from("category").delete().eq("id",id); }
   if(!q) return;
   if(!(await confirmDialog(text))) return;
@@ -1513,7 +1540,11 @@ async function doAdd(spec){
   if(kind==="horse"){ const name=(el("in_horse_"+a+"_"+b).value||"").trim(); const gid=el("in_horsegrp_"+a+"_"+b).value||null;
     if(!name){ await infoDialog("Skriv hästens namn i fältet först, välj grupp och tryck sedan på + Lägg till häst.", "Namn saknas"); return; }
     r = await db.from("horse").insert({ profile_id:b, name, group_id:gid }); }
-  if(kind==="pass"){ if(!(await passSave())) return; delete stOpen.add_pass; await reloadStableData(); return; }
+  if(kind==="pass" || kind==="task"){
+    if(!(await passSave())) return;
+    delete stOpen[kind === "task" ? "add_task" : "add_pass"];
+    await reloadStableData(); return;
+  }
   if(!r) return;
   if(r.error){ alert("Kunde inte lägga till: " + r.error.message); return; }
   // fäll ihop kontrollen igen — nästa tillägg börjar med "Lägg till …"-raden
@@ -1530,6 +1561,7 @@ const WD_SHORT = ["", "mån", "tis", "ons", "tor", "fre", "lör", "sön"];
 const NTH_LBL = { 1:"Första", 2:"Andra", 3:"Tredje", 4:"Fjärde", 5:"Sista" };
 /* Kort beskrivning av när ett pass återkommer, för raden i inställningarna */
 function passRuleText(p){
+  if(p.is_task) return "Varje jourperiod";
   if(p.is_special){
     const n = ((stData && stData.passDates)||[]).filter(x=> x.pass_id === p.id).length;
     return "Specialpass · " + n + (n===1?" datum":" datum");
@@ -1800,6 +1832,45 @@ async function horseStatsDialog(group){
   ov.onclick = (e)=>{ if(e.target === ov) ov.remove(); };
 }
 
+/* Uppgifter: pass utan datum som gäller hela jourperioden.
+   Bokningen sparas på periodens första dag, så den räknas som vilket pass som helst. */
+async function taskList(tasks, days, myIds){
+  if(!tasks.length) return "";
+  const ps = periodStart(days[0]);
+  const psISO = isoDate(ps);
+  const bq = await db.from("booking").select("id,pass_id,profile_id,profile(name)")
+    .eq("stable_id", schedCtx.stable.id).eq("pass_date", psISO).in("pass_id", tasks.map(t=> t.id));
+  const bks = bq.error ? [] : (bq.data||[]);
+  const rel = releaseInfo(ps);
+  const forbi = new Date(ps); forbi.setDate(forbi.getDate() + (schedCtx.stable.rotation_basis === "month" ? 40 : 7));
+  const passerat = forbi < new Date();
+  const rader = tasks.map(t=>{
+    const mina = bks.filter(b2=> b2.pass_id === t.id);
+    const cap = t.capacity || 1;
+    const chips = mina.map(b2=>{
+      const mine = myIds.has(b2.profile_id);
+      const namn = (b2.profile && b2.profile.name) || "?";
+      const kryss = (mine || curAdmin) && !passerat
+        ? `<button class="x2" data-cancel="${b2.id}" data-cinfo="${esc(t.name)}|${psISO}" data-cprof="${esc(namn)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(namn)}">✕</button>` : "";
+      return `<span class="schip" style="${profChipStyle(b2.profile_id)}"><span class="cn">${esc(namn)}</span>${kryss}</span>`;
+    }).join("");
+    const full = mina.length >= cap;
+    const kanBoka = schedCtx.actingProfileId && !full && !passerat && (rel.open || curAdmin);
+    const knapp = kanBoka ? `<button class="btn sm" data-booktask="${t.id}|${psISO}">Ta uppgiften</button>`
+      : (!full && !passerat && !rel.open ? `<span class="meta2">${rel.started ? "din tur " + esc(shortWhen(rel.mineAt)) : "öppnar " + esc(shortWhen(rel.openAt))}</span>` : "");
+    const kat = (schedCtx.cats||[]).find(c=> c.id === t.category_id);
+    return `<div class="taskitem">
+      <div class="ti-head"><b>${esc(t.name)}</b>${kat?`<span class="tagpill">${esc(kat.name)}</span>`:""}
+        <span class="tagpill ${full?"":"st-pend"}">${mina.length}/${cap}</span></div>
+      ${(t.description||"").trim()?`<div class="meta2">${esc(t.description)}</div>`:""}
+      <div class="ti-row"><div class="schips">${chips || `<span class="meta2">Ingen har tagit den än</span>`}</div>${knapp}</div>
+    </div>`;
+  }).join("");
+  return `<div class="card">
+    <p class="sub" style="margin:0 0 8px">Uppgifter <span class="sectionhint">— gäller hela ${esc(periodLabel(ps))}</span></p>
+    ${rader}</div>`;
+}
+
 function schedNotices(days, map, passes, myIds){
   const st = schedCtx.stable || {};
   let out = "";
@@ -1833,6 +1904,14 @@ function schedNotices(days, map, passes, myIds){
       const n = (map[p.id+"|"+isoDate(d)]||[]).length;
       if(n < (p.capacity||1)) kvar.push(1);
     }));
+    // uppgifter gäller hela perioden och bokas på periodens första dag
+    const psISO = isoDate(ps);
+    if(days.some(d=> isoDate(d) === psISO)){
+      (schedCtx.passes||[]).filter(p=> p.is_task).forEach(p=>{
+        const n = (map[p.id+"|"+psISO]||[]).length;
+        if(n < (p.capacity||1)) kvar.push(1);
+      });
+    }
     if(kvar.length && Date.now() >= dl.getTime() && isoDate(days[days.length-1]) >= isoDate(new Date())){
       out += `<div class="card"><div class="msg err" style="margin:0">⚠ Alla pass är inte tagna för ${esc(periodLabel(ps))} — <b>${kvar.length}</b> ${kvar.length===1?"pass":"pass"} saknar folk, och deadline var ${esc(shortWhen(dl))}.</div></div>`;
     }
@@ -1857,7 +1936,8 @@ async function drawGrid(keepScroll){
 
   const duty = dutyGroupNow(weekStart2);
   const myIds = new Set(schedCtx.myProfiles.map(p=>p.id));
-  const passes = schedCtx.passes;
+  const passes = (schedCtx.passes||[]).filter(p=> !p.is_task);
+  const tasks = (schedCtx.passes||[]).filter(p=> p.is_task);
   const tISO = isoDate(new Date());
 
   // Måltal per profil (viktat efter hästar) + faktiskt bokade denna vecka
@@ -1898,6 +1978,7 @@ async function drawGrid(keepScroll){
     passes.forEach(p=>{ html += scheduleCell(p, d, dISO, map, myIds, tISO); });
   });
   html += `</div></div>`;
+  html += await taskList(tasks, days, myIds);
   if(schedPassSel) html += passPanel(schedPassSel, map, days);
   html += renderStats(tgt, myIds);   // statistiken under schemat
   html += `<div class="card">
@@ -1910,6 +1991,10 @@ async function drawGrid(keepScroll){
   host.querySelectorAll("[data-book]").forEach(btn=> btn.onclick = ()=> bookCell(btn.getAttribute("data-book"), btn.getAttribute("data-date")));
   host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof"), btn.getAttribute("data-cmine") !== "0"); });
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
+  host.querySelectorAll("[data-booktask]").forEach(b2=> b2.onclick = ()=>{
+    const [tid, dISO] = b2.getAttribute("data-booktask").split("|");
+    bookCell(tid, dISO);
+  });
   const sb = el("statBtn");
   if(sb) sb.onclick = ()=> horseStatsDialog(dutyGroupNow(days[0]));
   host.querySelectorAll("[data-selpass]").forEach(n=> n.onclick = ()=>{
@@ -2036,7 +2121,9 @@ async function bookCell(passId, dISO){
     return;
   }
   const d = new Date(dISO + "T00:00:00");
-  const label = `${(pass && pass.name) || "passet"}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}`;
+  const label = (pass && pass.is_task)
+    ? `${pass.name} för ${periodLabel(d)}`
+    : `${(pass && pass.name) || "passet"}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}`;
   let asked = false;
   // Är det min grupps jourvecka? Annars: fråga innan bokning.
   const duty = dutyGroupNow(weekStart2);
@@ -2054,7 +2141,9 @@ async function bookCell(passId, dISO){
   if(!asked){
     const who = (schedCtx.myProfiles||[]).length > 1
       ? ` som ${((schedCtx.profiles||[]).find(x=> x.id === pid)||{}).name || ""}` : "";
-    const ok = await confirmDialog(`Vill du ta passet ${label}${who}?`, { title: "Ta pass", okText: "Ja, ta passet", primary: true });
+    const arUppgift = !!(pass && pass.is_task);
+    const ok = await confirmDialog(`Vill du ta ${arUppgift?"uppgiften":"passet"} ${label}${who}?`,
+      { title: arUppgift?"Ta uppgift":"Ta pass", okText: arUppgift?"Ja, ta uppgiften":"Ja, ta passet", primary: true });
     if(!ok) return;
   }
   const cap = pass ? (pass.capacity||1) : 1;
@@ -2096,8 +2185,10 @@ function categoryTotals(monday){
   const days = []; for(let i=0;i<7;i++){ const d=new Date(monday); d.setDate(d.getDate()+i); days.push(d); }
   const totals = {};
   schedCtx.passes.forEach(p=>{
+    // en uppgift gäller hela perioden — den räknas en gång, inte en gång per dag
     let applicableDays = 0;
-    days.forEach(d=>{ if(passApplies(p, d)) applicableDays++; });
+    if(p.is_task) applicableDays = 1;
+    else days.forEach(d=>{ if(passApplies(p, d)) applicableDays++; });
     const platser = applicableDays * (p.capacity || 1);
     if(platser === 0) return;
     const key = p.category_id || "none";
@@ -3217,10 +3308,14 @@ async function getDeadlineWarnings(){
       for(let d = new Date(ps); d <= pe; d.setDate(d.getDate()+1)){
         const dISO = isoDate(d);
         passes.forEach(p2=>{
-          if(!passApplies(p2, d)) return;
+          if(p2.is_task || !passApplies(p2, d)) return;
           saknas += Math.max(0, (p2.capacity||1) - (cnt[p2.id+"|"+dISO]||0));
         });
       }
+      const psISO2 = isoDate(ps);
+      passes.filter(p2=> p2.is_task).forEach(p2=>{
+        saknas += Math.max(0, (p2.capacity||1) - (cnt[p2.id+"|"+psISO2]||0));
+      });
       if(!saknas) continue;
       const lbl = basis === "month"
         ? ["januari","februari","mars","april","maj","juni","juli","augusti","september","oktober","november","december"][ps.getMonth()] + " " + ps.getFullYear()
