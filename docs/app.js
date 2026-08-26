@@ -730,6 +730,11 @@ async function reloadStableData(){
 }
 
 function caret(k){ return `<span class="caret">${stOpen[k]?"▾":"▸"}</span>`; }
+/* Lägg till-kontroller ligger dolda bakom en accentfärgad rad tills man klickar på den */
+function stAddCtl(showKey, label, controlHtml, lvl){
+  if(stOpen[showKey]) return `<div class="addhorse lvl${lvl}">${controlHtml}</div>`;
+  return `<div class="tleaf lvl${lvl}" data-stshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+}
 function isMyProfile(p){ return (p.profile_member||[]).some(m=> m.email && m.email.toLowerCase() === session.email); }
 function tbtns(kind, id, canEdit, canDel){
   if(canEdit === undefined) canEdit = curAdmin;
@@ -738,51 +743,64 @@ function tbtns(kind, id, canEdit, canDel){
   return `<span class="tbtns">${canEdit?`<button class="x" data-e="${kind}:${id}" title="Ändra">${ic("pencil")}</button>`:""}${canDel?`<button class="x" data-d="${kind}:${id}" title="Ta bort">${ic("x")}</button>`:""}</span>`;
 }
 
-function horseRow(h, mine){
+function horseRow(h, mine, lvl){
   const may = curAdmin || mine;
+  lvl = lvl || 3;
   if(may && h.id === editingHorseId){
     const gsel = `<option value="">Ingen grupp</option>` + stData.groups.map(g=>`<option value="${g.id}"${g.id===h.group_id?" selected":""}>${esc(g.name)}</option>`).join("");
-    return `<div class="editrow lvl3">
+    return `<div class="editrow lvl${lvl}">
       <div class="field"><label class="fld">Hästens namn</label><input type="text" id="eh_name_${h.id}" value="${esc(h.name||'')}"></div>
       <div class="field"><label class="fld">Grupp</label><select id="eh_group_${h.id}">${gsel}</select></div>
       <div class="editbtns"><button class="btn primary sm" data-s="horse:${h.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>
     </div>`;
   }
   const g = stData.groups.find(x=>x.id===h.group_id);
-  return `<div class="tleaf lvl3"><span class="cdot" style="background:${(g&&g.color)||'#c9d6cd'}"></span><span>${esc(h.name||'Häst')}</span>${tbtns("horse",h.id,may,may)}</div>`;
+  return `<div class="tleaf lvl${lvl}"><span class="cdot" style="background:${(g&&g.color)||'#c9d6cd'}"></span><span>${esc(h.name||'Häst')}</span>${tbtns("horse",h.id,may,may)}</div>`;
 }
 
-function profileNode(p, groupId, keyPrefix){
+function profileNode(p, groupId, keyPrefix, lvl){
+  lvl = lvl || 2;            // under en grupp ligger profilen på nivå 2, i Profiler-fliken på nivå 1
+  const sub = lvl + 1;
   const key = `p_${keyPrefix}_${p.id}`;
   const mine = isMyProfile(p);
   const may = curAdmin || mine;   // får redigera profilen (namn, mejl, hästar)
-  const horses = (p.horse||[]).filter(h=> groupId===null ? !h.group_id : h.group_id===groupId);
+  const horses = groupId === "*" ? (p.horse||[])
+    : (p.horse||[]).filter(h=> groupId===null ? !h.group_id : h.group_id===groupId);
   const out = [];
   const isAdm = profileIsAdmin(p);
   if(may && p.id === editingProfileId){
-    out.push(`<div class="editrow lvl2"><div class="editname"><input type="text" id="epr_name_${p.id}" value="${esc(p.name)}">
+    out.push(`<div class="editrow lvl${lvl}"><div class="editname"><input type="text" id="epr_name_${p.id}" value="${esc(p.name)}">
       <button class="btn primary sm" data-s="profile:${p.id}">Spara</button><button class="btn sm" data-c="1">Avbryt</button></div>
       ${curAdmin?`<div class="editbtns" style="margin-top:10px"><button class="btn sm" data-mkadm="${p.id}">${isAdm?"Ta bort admin-behörighet":"Gör till admin"}</button></div>`:""}</div>`);
   } else {
     const pbtns = `<span class="tbtns">${curAdmin?`<button class="x" data-mv="${p.id}" title="Byt grupp">${ic("swap")}</button>`:""}${may?`<button class="x" data-e="profile:${p.id}" title="Ändra">${ic("pencil")}</button>`:""}${curAdmin?`<button class="x" data-d="profile:${p.id}" title="Ta bort">${ic("x")}</button>`:""}</span>`;
-    out.push(`<div class="trow lvl2 titem" data-t="${key}">${ic("user")} ${esc(p.name)}${mine?` <span class="tagpill">du</span>`:""}${isAdm?` <span class="tagpill">admin</span>`:""} <span class="meta2">${horses.length} häst${horses.length===1?"":"ar"}</span> ${caret(key)}${pbtns}</div>`);
+    out.push(`<div class="trow lvl${lvl} titem" data-t="${key}">${ic("user")} ${esc(p.name)}${mine?` <span class="tagpill">du</span>`:""}${isAdm?` <span class="tagpill">admin</span>`:""} <span class="meta2">${horses.length} häst${horses.length===1?"":"ar"}</span> ${caret(key)}${pbtns}</div>`);
   }
   if(stOpen[key]){
     const mails = (p.profile_member||[]).map(m=>m.email).filter(Boolean);
-    mails.forEach(em=> out.push(`<div class="tleaf lvl3">${ic("mail")} ${esc(em)}${may?`<span class="tbtns"><button class="x" data-d="mail:${p.id}|${encodeURIComponent(em)}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`));
-    if(!mails.length) out.push(`<div class="tleaf lvl3 tmuted">Ingen mejl kopplad än</div>`);
-    if(may) out.push(`<div class="addhorse lvl3"><input type="email" id="in_mail_${keyPrefix}_${p.id}" placeholder="Lägg till mejladress"><button class="btn sm" data-add="mail:${keyPrefix}:${p.id}">+ Mejl</button></div>`);
+    mails.forEach(em=> out.push(`<div class="tleaf lvl${sub}">${ic("mail")} ${esc(em)}${may?`<span class="tbtns"><button class="x" data-d="mail:${p.id}|${encodeURIComponent(em)}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`));
+    if(!mails.length) out.push(`<div class="tleaf lvl${sub} tmuted">Ingen mejl kopplad än</div>`);
+    if(may) out.push(stAddCtl(`add_mail_${keyPrefix}_${p.id}`, "Lägg till mejladress",
+      `<input type="email" id="in_mail_${keyPrefix}_${p.id}" placeholder="namn@exempel.se"><button class="btn sm" data-add="mail:${keyPrefix}:${p.id}">+ Mejl</button>`, sub));
     if(may){
       const remSel = (slot)=>{ const cur = String(p["remind"+slot+"_min"] || "");
         return `<select data-rem="${slot}:${p.id}">${REMIND_OPTS.map(([v,l])=>`<option value="${v}"${cur===v?" selected":""}>${l}</option>`).join("")}</select>`; };
-      out.push(`<div class="tleaf lvl3 tmuted" style="font-weight:700">⏰ Påminnelser om pass (visas i klockan)</div>`);
-      out.push(`<div class="addhorse lvl3"><span class="meta2" style="min-width:96px">Påminnelse 1</span>${remSel(1)}</div>`);
-      out.push(`<div class="addhorse lvl3"><span class="meta2" style="min-width:96px">Påminnelse 2</span>${remSel(2)}</div>`);
+      // påminnelserna ligger hopfällda bakom en egen rad, med nuvarande val som sammanfattning
+      const remKey = `rem_${keyPrefix}_${p.id}`;
+      const remLbl = v=> (REMIND_OPTS.find(o=> o[0] === String(v||""))||["",""])[1];
+      const set = [p.remind1_min, p.remind2_min].filter(Boolean).map(remLbl);
+      out.push(`<div class="trow lvl${sub} titem" data-t="${remKey}">⏰ Påminnelser om pass <span class="meta2">${set.length ? esc(set.join(" · ")) : "av"}</span> ${caret(remKey)}</div>`);
+      if(stOpen[remKey]){
+        out.push(`<div class="tleaf lvl${sub} tmuted">Visas i notisklockan innan passet börjar.</div>`);
+        out.push(`<div class="addhorse lvl${sub}"><span class="meta2" style="min-width:96px">Påminnelse 1</span>${remSel(1)}</div>`);
+        out.push(`<div class="addhorse lvl${sub}"><span class="meta2" style="min-width:96px">Påminnelse 2</span>${remSel(2)}</div>`);
+      }
     }
-    horses.forEach(h=> out.push(horseRow(h, mine)));
+    horses.forEach(h=> out.push(horseRow(h, mine, sub)));
     if(may){
       const gsel = `<option value="">Ingen grupp</option>` + stData.groups.map(g=>`<option value="${g.id}"${g.id===groupId?" selected":""}>${esc(g.name)}</option>`).join("");
-      out.push(`<div class="addhorse lvl3"><input type="text" id="in_horse_${keyPrefix}_${p.id}" placeholder="Hästens namn"><select id="in_horsegrp_${keyPrefix}_${p.id}">${gsel}</select><button class="btn sm" data-add="horse:${keyPrefix}:${p.id}">+ Lägg till häst</button></div>`);
+      out.push(stAddCtl(`add_horse_${keyPrefix}_${p.id}`, "Lägg till häst",
+        `<input type="text" id="in_horse_${keyPrefix}_${p.id}" placeholder="Hästens namn"><select id="in_horsegrp_${keyPrefix}_${p.id}">${gsel}</select><button class="btn sm" data-add="horse:${keyPrefix}:${p.id}">+ Lägg till häst</button>`, sub));
     }
   }
   return out.join("");
@@ -858,24 +876,42 @@ function renderStableTree(){
       if(stOpen.g_none) loose.forEach(p=> t.push(profileNode(p, null, "none")));
     }
     if(curAdmin){
-      t.push(`<div class="addhorse lvl1"><input type="text" id="in_group" placeholder="Ny grupp"><button class="btn sm" data-add="group">+ Grupp</button></div>`);
-      t.push(`<div class="addhorse lvl1"><input type="text" id="in_profile" placeholder="Ny profil, t.ex. Familjen Ek"><button class="btn sm" data-add="profile">+ Profil</button></div>`);
+      t.push(stAddCtl("add_group", "Lägg till grupp",
+        `<input type="text" id="in_group" placeholder="Gruppens namn"><button class="btn sm" data-add="group">+ Grupp</button>`, 1));
+      t.push(stAddCtl("add_profile", "Lägg till profil",
+        `<input type="text" id="in_profile" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile">+ Profil</button>`, 1));
     }
   }
-  t.push(`</div>`); t.push(tSect(172));
+  t.push(`</div>`);
+
+  // Profiler som egen flik: alla profiler samlade, med hästar oavsett grupp
+  t.push(tSect(196));
+  t.push(`<div class="trow lvl0" data-t="profiler">${ic("user")} Profiler ${caret("profiler")}</div>`);
+  if(stOpen.profiler){
+    const all = stData.profiles.slice().sort((a,b)=> (a.name||"").localeCompare(b.name||"", "sv"));
+    all.forEach(pr=> t.push(profileNode(pr, "*", "all", 1)));
+    if(!all.length) t.push(`<div class="tleaf lvl1 tmuted">Inga profiler än</div>`);
+    if(curAdmin) t.push(stAddCtl("add_profile2", "Lägg till profil",
+      `<input type="text" id="in_profile2" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile2">+ Profil</button>`, 1));
+  }
+  t.push(`</div>`);
+
+  t.push(tSect(172));
   t.push(`<div class="trow lvl0" data-t="schema">${ic("calendar")} Schema ${caret("schema")}</div>`);
   if(stOpen.schema){
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
       stData.passes.forEach(p=> t.push(passRow(p)));
       if(!stData.passes.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
-      if(curAdmin) t.push(addPassForm());
+      if(curAdmin) t.push(stOpen.add_pass ? addPassForm()
+        : `<div class="tleaf lvl2" data-stshow="add_pass" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} Lägg till pass</div>`);
     }
     t.push(`<div class="trow lvl1" data-t="kategorier">${ic("tag")} Kategorier ${caret("kategorier")}</div>`);
     if(stOpen.kategorier){
       stData.cats.forEach(c=> t.push(catRow(c)));
       if(!stData.cats.length) t.push(`<div class="tleaf lvl2 tmuted">Inga kategorier än</div>`);
-      if(curAdmin) t.push(`<div class="addhorse lvl2"><input type="text" id="in_cat" placeholder="Ny kategori"><button class="btn sm" data-add="cat">+ Kategori</button></div>`);
+      if(curAdmin) t.push(stAddCtl("add_cat", "Lägg till kategori",
+        `<input type="text" id="in_cat" placeholder="Kategorins namn"><button class="btn sm" data-add="cat">+ Kategori</button>`, 2));
     }
   }
   t.push(`</div>`);
@@ -886,6 +922,7 @@ function renderStableTree(){
   host.querySelectorAll("[data-s]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doSave(b.getAttribute("data-s")); });
   host.querySelectorAll("[data-c]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); cancelEdit(); });
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
+  host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
   host.querySelectorAll("[data-mv]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); moveProfileDialog(b.getAttribute("data-mv")); });
   host.querySelectorAll("[data-gs]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); groupStatsDialog(b.getAttribute("data-gs")); });
   host.querySelectorAll("[data-mkadm]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); toggleAdminForProfile(b.getAttribute("data-mkadm")); });
@@ -1098,7 +1135,9 @@ async function doAdd(spec){
   let r = null;
   if(kind==="group"){ const name=(el("in_group").value||"").trim(); if(!name) return;
     r = await db.from("duty_group").insert({ stable_id:stStableId, name, color:GROUP_GREENS[stData.groups.length % GROUP_GREENS.length], sort_order:stData.groups.length }); }
-  if(kind==="profile"){ const name=(el("in_profile").value||"").trim(); if(!name) return;
+  if(kind==="profile" || kind==="profile2"){   // samma sak från Grupper-fliken och Profiler-fliken
+    const fld = el(kind === "profile2" ? "in_profile2" : "in_profile");
+    const name=((fld && fld.value)||"").trim(); if(!name) return;
     r = await db.from("profile").insert({ stable_id:stStableId, name }); }
   if(kind==="cat"){ const name=(el("in_cat").value||"").trim(); if(!name) return;
     r = await db.from("category").insert({ stable_id:stStableId, name, sort_order:stData.cats.length }); }
