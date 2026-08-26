@@ -78,6 +78,63 @@ function dutyGroupForDate(d, groups, offset, basis){
   const idx = basis === "month" ? monthIndexOf(d) + (offset||0) : weekIndexOf(startOfWeek(d)) + (offset||0);
   return groups[((idx % n) + n) % n];
 }
+/* Periodens start (måndag eller den 1:a) enligt stallets rotationsbas */
+function periodStart(d){
+  const basis = schedCtx && schedCtx.stable ? schedCtx.stable.rotation_basis : "week";
+  return basis === "month" ? new Date(d.getFullYear(), d.getMonth(), 1) : startOfWeek(d);
+}
+function periodLabel(d){
+  const basis = schedCtx && schedCtx.stable ? schedCtx.stable.rotation_basis : "week";
+  const MF = ["januari","februari","mars","april","maj","juni","juli","augusti","september","oktober","november","december"];
+  return basis === "month" ? MF[d.getMonth()] + " " + d.getFullYear() : "vecka " + isoWeekNumber(d);
+}
+/* Hur många gånger jourgruppen haft ansvaret — styr vems tur det är att välja först */
+function periodTurnNumber(ps){
+  const n = (schedCtx.groups||[]).length || 1;
+  const idx = schedCtx.stable.rotation_basis === "month" ? monthIndexOf(ps) : weekIndexOf(startOfWeek(ps));
+  return Math.floor((idx + (schedCtx.stable.rotation_offset||0)) / n);
+}
+/* Hästarna i periodens jourgrupp, i den ordning de får välja (ordningen flyttas ett steg per period) */
+function dutyHorseOrder(ps){
+  const duty = dutyGroupForDate(ps, schedCtx.groups, schedCtx.stable.rotation_offset, schedCtx.stable.rotation_basis);
+  if(!duty) return [];
+  const horses = [];
+  (schedCtx.profiles||[]).forEach(pr=> (pr.horse||[]).forEach(h=>{
+    if(h.group_id === duty.id) horses.push({ id:h.id, name:h.name||"Häst", profileId:pr.id, profileName:pr.name });
+  }));
+  horses.sort((a,b)=> a.id < b.id ? -1 : (a.id > b.id ? 1 : 0));
+  const n = horses.length; if(!n) return [];
+  const shift = ((periodTurnNumber(ps) % n) + n) % n;
+  return horses.slice(shift).concat(horses.slice(0, shift));
+}
+/* När öppnar bokningen för ett datum — och är det min tur än? */
+function releaseInfo(d){
+  const st = (schedCtx && schedCtx.stable) || {};
+  if(st.release_days == null) return { always:true, open:true, started:true, freeForAll:true };
+  const ps = periodStart(d);
+  const openAt = new Date(ps); openAt.setDate(openAt.getDate() - st.release_days); openAt.setHours(0,0,0,0);
+  const now = Date.now();
+  const order = st.release_rotation ? dutyHorseOrder(ps) : [];
+  const hours = st.release_hours || 24;
+  const allOpenAt = order.length ? new Date(openAt.getTime() + order.length*hours*3600000) : openAt;
+  let mineAt = openAt, myIdx = -1;
+  if(order.length){
+    const mine = (schedCtx.myProfiles||[]).map(x=> x.id);
+    myIdx = order.findIndex(h=> mine.includes(h.profileId));
+    mineAt = new Date(openAt.getTime() + (myIdx >= 0 ? myIdx : order.length)*hours*3600000);
+  }
+  const turnIdx = order.length ? Math.min(order.length, Math.floor((now - openAt.getTime()) / (hours*3600000))) : 0;
+  return { always:false, openAt, allOpenAt, mineAt, order, hours, ps, myIdx,
+           turnIdx: now >= openAt.getTime() ? turnIdx : -1,
+           started: now >= openAt.getTime(),
+           open: now >= mineAt.getTime(),
+           freeForAll: now >= allOpenAt.getTime() };
+}
+function shortWhen(dt){
+  const idag = isoDate(new Date()), d2 = isoDate(dt);
+  const t = String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
+  return (d2 === idag ? "idag" : `${dt.getDate()}/${dt.getMonth()+1}`) + (t === "00:00" ? "" : " " + t);
+}
 function dutyGroupNow(d){
   if(!schedCtx) return null;
   return dutyGroupForDate(d, schedCtx.groups, schedCtx.stable.rotation_offset, schedCtx.stable.rotation_basis);
@@ -1069,9 +1126,33 @@ function renderStableTree(){
   t.push(`<div class="trow lvl0" data-t="schema">${ic("calendar")} Schema ${caret("schema")}</div>`);
   if(stOpen.schema){
     if(curAdmin){
-      const basis = (stStableRow && stStableRow.rotation_basis) || "week";
+      const st = stStableRow || {};
+      const basis = st.rotation_basis || "week";
+      const per = basis === "month" ? "månaden" : "veckan";
       t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Jourrotation</span>
         <select id="rotbasis"><option value="week"${basis==="week"?" selected":""}>Ny grupp varje vecka</option><option value="month"${basis==="month"?" selected":""}>Ny grupp varje månad</option></select></div>`);
+      // Deadline: alla pass tagna X dagar innan perioden börjar
+      t.push(`<div class="trow lvl1 titem" data-t="deadline">${ic("clock")} Deadline <span class="meta2">${st.deadline_days != null ? st.deadline_days + " dagar innan" : "av"}</span> ${caret("deadline")}</div>`);
+      if(stOpen.deadline) t.push(`<div class="addbox lvl2">
+        <div class="addhead"><span>Deadline</span></div>
+        <div class="meta2" style="margin-bottom:8px">Alla pass ska vara tagna så här många dagar innan ${per} börjar. Är de inte det får alla i jourgruppen en varning i schemat och i klockan.</div>
+        <label class="chk sm" style="padding:0"><input type="checkbox" id="dlOn"${st.deadline_days != null ? " checked":""}> Använd deadline</label>
+        ${st.deadline_days != null ? `<div class="addhorse" style="margin-top:8px"><span class="meta2" style="min-width:104px">Antal dagar innan</span>
+          <select id="dlDays">${[1,2,3,4,5,6,7,10,14,21,30].map(n=>`<option value="${n}"${n===st.deadline_days?" selected":""}>${n} dagar</option>`).join("")}</select></div>` : ""}
+      </div>`);
+      // Fördelning: när passen släpps och vem som får välja först
+      const rel = st.release_days != null;
+      t.push(`<div class="trow lvl1 titem" data-t="fordelning">${ic("swap")} Fördelning <span class="meta2">${rel ? "släpp " + st.release_days + " dagar innan" + (st.release_rotation ? " · rullande förtur" : "") : "öppet hela tiden"}</span> ${caret("fordelning")}</div>`);
+      if(stOpen.fordelning) t.push(`<div class="addbox lvl2">
+        <div class="addhead"><span>Fördelning</span></div>
+        <div class="meta2" style="margin-bottom:8px">Med släpp öppnar ${per}s pass för bokning först ett visst antal dagar innan ${per} börjar — som ett biljettsläpp. Med rullande förtur får en häst i taget välja först, en i taget, och ordningen flyttas fram ett steg varje ${basis === "month" ? "månad" : "vecka"}. När alla hästar i jourgruppen haft sin tur öppnas passen för alla i stallet.</div>
+        <label class="chk sm" style="padding:0"><input type="checkbox" id="relOn"${rel ? " checked":""}> Släpp passen ett visst antal dagar innan</label>
+        ${rel ? `<div class="addhorse" style="margin-top:8px"><span class="meta2" style="min-width:104px">Släpps</span>
+            <select id="relDays">${[1,2,3,4,5,6,7,10,14,21,30].map(n=>`<option value="${n}"${n===st.release_days?" selected":""}>${n} dagar innan</option>`).join("")}</select></div>
+          <label class="chk sm" style="padding:0;margin-top:8px"><input type="checkbox" id="relRot"${st.release_rotation ? " checked":""}> Rullande förtur, en häst i taget</label>
+          ${st.release_rotation ? `<div class="addhorse" style="margin-top:8px"><span class="meta2" style="min-width:104px">Tid per häst</span>
+            <select id="relHours">${[6,12,24,48,72].map(n=>`<option value="${n}"${n===(st.release_hours||24)?" selected":""}>${n} timmar</option>`).join("")}</select></div>` : ""}` : ""}
+      </div>`);
     }
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
@@ -1098,6 +1179,26 @@ function renderStableTree(){
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
   host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
   host.querySelectorAll("[data-sthide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete stOpen[b.getAttribute("data-sthide")]; renderStableTree(); });
+  const saveStable = async (patch)=>{
+    const r = await db.from("stable").update(patch).eq("id", stStableId);
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/bokningsregler.sql körts?)"); return false; }
+    Object.assign(stStableRow || {}, patch);
+    if(schedCtx && schedCtx.stable && schedCtx.stable.id === stStableId) Object.assign(schedCtx.stable, patch);
+    renderStableTree();
+    return true;
+  };
+  const dlOn = el("dlOn");
+  if(dlOn) dlOn.onchange = ()=> saveStable({ deadline_days: dlOn.checked ? 7 : null });
+  const dlDays = el("dlDays");
+  if(dlDays) dlDays.onchange = ()=> saveStable({ deadline_days: parseInt(dlDays.value,10) });
+  const relOn = el("relOn");
+  if(relOn) relOn.onchange = ()=> saveStable({ release_days: relOn.checked ? 7 : null, release_rotation: relOn.checked ? (stStableRow||{}).release_rotation||false : false });
+  const relDays = el("relDays");
+  if(relDays) relDays.onchange = ()=> saveStable({ release_days: parseInt(relDays.value,10) });
+  const relRot = el("relRot");
+  if(relRot) relRot.onchange = ()=> saveStable({ release_rotation: relRot.checked });
+  const relHours = el("relHours");
+  if(relHours) relHours.onchange = ()=> saveStable({ release_hours: parseInt(relHours.value,10) });
   const rb = el("rotbasis");
   if(rb) rb.onchange = async ()=>{
     const r = await db.from("stable").update({ rotation_basis: rb.value }).eq("id", stStableId);
@@ -1396,8 +1497,10 @@ async function renderSchedule(stableId){
       ]);
       passDates = pdq.error?[]:pdq.data; passGroups = pgq.error?[]:pgq.data;
     }
+    const cq = await db.from("category").select("*").eq("stable_id", stableId).order("sort_order");
     schedCtx = { stable: st.data, groups: g.data, passes: sortPassesByTime(p.data), profiles: pr.data, myProfiles,
-                 passDates, passGroups, actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
+                 passDates, passGroups, cats: cq.error?[]:cq.data,
+                 actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
     curAdmin = await amIAdmin(stableId);   // admin kan ta bort vem som helst från ett pass
     schedLogOpen = false;
     if(!weekStart2) weekStart2 = startOfWeek(new Date());
@@ -1427,11 +1530,18 @@ function drawWeekNav(){
   const end = new Date(weekStart2); end.setDate(end.getDate()+6);
   const dayD = new Date(weekStart2); dayD.setDate(dayD.getDate()+schedDayOff);
   // vilka grupper har jouren i det man tittar på (kan bli två om månadsrotation delar veckan)
-  const span = schedMode === "day" ? [dayD]
-    : schedMode === "month" ? [schedMonth]
-    : [weekStart2, end];
-  const duties = [];
-  span.forEach(d=>{ const g = dutyGroupNow(d); if(g && !duties.some(x=> x.id === g.id)) duties.push(g); });
+  const monthBasis = (schedCtx.stable.rotation_basis === "month");
+  let duties = [];   // {group, label} — i månadsvyn med veckorotation blir det en per vecka
+  if(schedMode === "month" && !monthBasis){
+    const sista = new Date(schedMonth.getFullYear(), schedMonth.getMonth()+1, 0);
+    for(let m = startOfWeek(schedMonth); m <= sista; m.setDate(m.getDate()+7)){
+      const g = dutyGroupNow(m); if(!g) continue;
+      duties.push({ group:g, label:"v." + isoWeekNumber(m) });
+    }
+  } else {
+    const span = schedMode === "day" ? [dayD] : schedMode === "month" ? [schedMonth] : [weekStart2, end];
+    span.forEach(d=>{ const g = dutyGroupNow(d); if(g && !duties.some(x=> x.group.id === g.id)) duties.push({ group:g, label:"" }); });
+  }
   const lbl = schedMode === "day" ? `${DAY_NAMES[dayD.getDay()]} ${dayD.getDate()}/${dayD.getMonth()+1}`
     : schedMode === "month" ? `${MFULL[schedMonth.getMonth()]} ${schedMonth.getFullYear()}`
     : `Vecka ${isoWeekNumber(weekStart2)}`;
@@ -1451,7 +1561,7 @@ function drawWeekNav(){
     </div>
     ${sub?`<div class="muted" style="font-size:.82rem;margin-top:6px">${esc(sub)}</div>`:""}
     ${duties.length?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">${
-      duties.map(g=>`<span class="dutychip" style="background:${g.color||'#4e9e6e'}">${esc(g.name)}</span>`).join("")}</div>`:""}`;
+      duties.map(x=>`<span class="dutychip" style="background:${x.group.color||'#4e9e6e'}">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}${esc(x.group.name)}</span>`).join("")}</div>`:""}`;
   el("segSchedMode").querySelectorAll("[data-sm]").forEach(b=> b.onclick = ()=>{
     const m = b.getAttribute("data-sm");
     if(schedMode === m) return;
@@ -1572,6 +1682,97 @@ async function drawMonthGrid(keepScroll){
   });
 }
 
+/* Rutor överst i schemat: när passen släpps, vems tur det är, och deadline-varning */
+/* Statistik per häst i jourgruppen: antal och andel per passkategori sedan starten.
+   Bokningar ligger på profilen, så en profils pass fördelas jämnt på dess hästar. */
+async function horseStatsDialog(group){
+  if(!group){ infoDialog("Ingen jourgrupp den här perioden.", "Statistik"); return; }
+  const horses = [];
+  (schedCtx.profiles||[]).forEach(pr=> (pr.horse||[]).forEach(h=>{
+    if(h.group_id === group.id) horses.push({ id:h.id, name:h.name||"Häst", profileId:pr.id, profileName:pr.name });
+  }));
+  if(!horses.length){ infoDialog("Inga hästar i " + group.name + " än.", "Statistik"); return; }
+  const b = await db.from("booking").select("profile_id,pass_def(category_id)").eq("stable_id", schedCtx.stable.id);
+  if(b.error){ alert("Kunde inte hämta statistik: " + b.error.message); return; }
+  const nHorses = {};
+  horses.forEach(h=> nHorses[h.profileId] = (nHorses[h.profileId]||0) + 1);
+  const perHorse = {}, catKeys = new Set();
+  horses.forEach(h=> perHorse[h.id] = {});
+  (b.data||[]).forEach(bk=>{
+    if(!nHorses[bk.profile_id]) return;
+    const k = (bk.pass_def && bk.pass_def.category_id) || "none";
+    catKeys.add(k);
+    horses.filter(h=> h.profileId === bk.profile_id)
+      .forEach(h=> perHorse[h.id][k] = (perHorse[h.id][k]||0) + 1/nHorses[bk.profile_id]);
+  });
+  const cats = (schedCtx.cats || []);
+  const order = [...cats.map(c=> c.id), "none"].filter(k=> catKeys.has(k));
+  const fmt = v=> (Math.round(v*10)/10).toString().replace(".", ",");
+  let html = "";
+  if(!order.length){
+    html = `<div class="empty">Inga bokade pass än i ${esc(group.name)}.</div>`;
+  } else {
+    order.forEach(k=>{
+      const namn = k === "none" ? "Utan kategori" : ((cats.find(c=> c.id === k)||{}).name || "Övrigt");
+      const rader = horses.map(h=> ({ h, n: perHorse[h.id][k] || 0 })).sort((a,c)=> c.n - a.n);
+      const sum = rader.reduce((a,r)=> a + r.n, 0);
+      html += `<div class="sublabel" style="margin-top:12px">${esc(namn)}</div>` + rader.map(r=>{
+        const pct = sum > 0 ? Math.round(100 * r.n / sum) : 0;
+        return `<div class="scsrow"><span class="scsname">${esc(r.h.name)} <span class="meta2">${esc(r.h.profileName)}</span></span>
+          <span class="meta2">${fmt(r.n)} pass</span><span class="tagpill">${pct}%</span></div>`;
+      }).join("");
+    });
+  }
+  const ov = document.createElement("div"); ov.className = "modal-ov";
+  ov.innerHTML = `<div class="modal"><h3>Statistik · ${esc(group.name)}</h3>
+    <p class="meta2" style="margin:0 0 4px">Antal pass per kategori sedan starten, per häst. Har en profil flera hästar delas profilens pass lika mellan dem.</p>
+    <div style="max-height:60vh;overflow:auto">${html}</div>
+    <div class="modal-btns"><button class="btn primary" id="hsClose">Stäng</button></div></div>`;
+  document.body.appendChild(ov);
+  ov.querySelector("#hsClose").onclick = ()=> ov.remove();
+  ov.onclick = (e)=>{ if(e.target === ov) ov.remove(); };
+}
+
+function schedNotices(days, map, passes, myIds){
+  const st = schedCtx.stable || {};
+  let out = "";
+  const d0 = days[0];
+  const rel = releaseInfo(d0);
+  if(!rel.always){
+    const ps = rel.ps;
+    if(!rel.started){
+      out += `<div class="card"><div class="msg warn" style="margin:0">🔒 Passen för ${esc(periodLabel(ps))} öppnar <b>${esc(shortWhen(rel.openAt))}</b>.</div></div>`;
+    } else if(rel.order.length && !rel.freeForAll){
+      const nu = rel.order[Math.min(rel.turnIdx, rel.order.length-1)];
+      const nuText = nu ? `${nu.name} (${nu.profileName})` : "";
+      const koll = rel.order.map((h,i)=> `${i === rel.turnIdx ? "▶ " : ""}${esc(h.name)}`).join(" · ");
+      const nextAt = new Date(rel.openAt.getTime() + (rel.turnIdx+1)*rel.hours*3600000);
+      let txt, cls;
+      if(rel.myIdx >= 0 && rel.turnIdx === rel.myIdx){ cls = "ok"; txt = `✅ Det är din tur att välja pass — du har förtur till ${esc(shortWhen(nextAt))}`; }
+      else if(rel.open){ cls = "ok"; txt = `✅ Du kan boka. Just nu har <b>${esc(nuText)}</b> förtur.`; }
+      else { cls = "warn"; txt = `⏳ <b>${esc(nuText)}</b> väljer just nu — din tur ${esc(shortWhen(rel.mineAt))}`; }
+      out += `<div class="card"><div class="msg ${cls}" style="margin:0">${txt}
+        <div class="meta2" style="margin-top:6px">Ordning: ${koll}</div>
+        <div class="meta2">Öppet för alla ${esc(shortWhen(rel.allOpenAt))}</div></div></div>`;
+    }
+  }
+  // deadline: alla pass tagna X dagar innan perioden börjar
+  if(st.deadline_days != null){
+    const ps = periodStart(d0);
+    const dl = new Date(ps); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
+    const kvar = [];
+    days.forEach(d=> passes.forEach(p=>{
+      if(!passApplies(p, d)) return;
+      const n = (map[p.id+"|"+isoDate(d)]||[]).length;
+      if(n < (p.capacity||1)) kvar.push(1);
+    }));
+    if(kvar.length && Date.now() >= dl.getTime() && isoDate(days[days.length-1]) >= isoDate(new Date())){
+      out += `<div class="card"><div class="msg err" style="margin:0">⚠ Alla pass är inte tagna för ${esc(periodLabel(ps))} — <b>${kvar.length}</b> ${kvar.length===1?"pass":"pass"} saknar folk, och deadline var ${esc(shortWhen(dl))}.</div></div>`;
+    }
+  }
+  return out;
+}
+
 async function drawGrid(keepScroll){
   const host = el("gridHost");
   const scrollY = window.scrollY;
@@ -1605,7 +1806,8 @@ async function drawGrid(keepScroll){
   }
 
   schedCtx.catTint = buildCatTints(passes);
-  let html = `<div class="card schedcard" style="overflow-x:auto"><div class="sgrid" style="--cols:${passes.length}">`;
+  let html = schedNotices(days, map, passes, myIds);
+  html += `<div class="card schedcard" style="overflow-x:auto"><div class="sgrid" style="--cols:${passes.length}">`;
   // rubrikrad: hörn + pass (vågrätt)
   html += `<div class="scorner"></div>`;
   passes.forEach(p=>{
@@ -1641,6 +1843,8 @@ async function drawGrid(keepScroll){
   host.querySelectorAll("[data-book]").forEach(btn=> btn.onclick = ()=> bookCell(btn.getAttribute("data-book"), btn.getAttribute("data-date")));
   host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof"), btn.getAttribute("data-cmine") !== "0"); });
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
+  const sb = el("statBtn");
+  if(sb) sb.onclick = ()=> horseStatsDialog(dutyGroupNow(days[0]));
   host.querySelectorAll("[data-selpass]").forEach(n=> n.onclick = ()=>{
     const id = n.getAttribute("data-selpass");
     schedPassSel = (schedPassSel === id) ? null : id;
@@ -1716,7 +1920,9 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
   const isPast = dISO < tISO;
   const mineHere = list.some(bk=> myIds.has(bk.profile_id));
   const mayTake = !schedCtx.actingProfileId || passOpenTo(p, schedCtx.actingProfileId);
-  const canBook = schedCtx.actingProfileId && !full && !isPast && mayTake;
+  const rel = releaseInfo(d);
+  const released = rel.open || curAdmin;
+  const canBook = schedCtx.actingProfileId && !full && !isPast && mayTake && released;
   const chips = list.map(bk=>{
     const mine = myIds.has(bk.profile_id);
     const canReq = !isPast && schedCtx.actingProfileId;
@@ -1725,7 +1931,13 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
     const who = (bk.profile && bk.profile.name) || "?";
     return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${canReq?(mine?"Ge bort passet":"Fråga om att ta över"):""}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
   }).join("");
-  const empty = (!list.length && !canBook) ? `<span class="sempty" title="${mayTake?"":"Passet är reserverat för andra grupper"}">${mayTake?"–":"·"}</span>` : "";
+  let emptyTxt = "–", emptyTitle = "";
+  if(!mayTake){ emptyTxt = "·"; emptyTitle = "Passet är reserverat för andra grupper"; }
+  else if(!isPast && !released){
+    emptyTxt = rel.started ? "⏳" : "🔒";
+    emptyTitle = rel.started ? `Din tur ${shortWhen(rel.mineAt)}` : `Passen öppnar ${shortWhen(rel.openAt)}`;
+  }
+  const empty = (!list.length && !canBook) ? `<span class="sempty" title="${esc(emptyTitle)}">${emptyTxt}</span>` : "";
   const badge = cap>1 ? `<span class="scap ${full?"ok":"need"}">${list.length}/${cap}</span>` : "";
   const btn = canBook ? `<button class="sbook" data-book="${p.id}" data-date="${dISO}" title="Ta pass">+</button>` : "";
   const hu = (schedCtx.catTint || {})[p.category_id];
@@ -1744,6 +1956,13 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
 
 async function bookCell(passId, dISO){
   const pid = schedCtx.actingProfileId; if(!pid) return;
+  const relB = releaseInfo(new Date(dISO + "T00:00:00"));
+  if(!relB.open && !curAdmin){
+    await infoDialog(relB.started
+      ? `Passen släpps en i taget just nu. Din tur är ${shortWhen(relB.mineAt)}.`
+      : `Passen för ${periodLabel(relB.ps)} öppnar ${shortWhen(relB.openAt)}.`, "Inte öppet än");
+    return;
+  }
   const pass = schedCtx.passes.find(x=>x.id===passId);
   if(pass && !passOpenTo(pass, pid)){
     await infoDialog("Det här passet är reserverat för andra grupper.", "Kan inte bokas");
@@ -1882,7 +2101,10 @@ function renderStats(tgt, myIds){
     return `<div class="statrow${mine?" me":""}"><span class="sn">${esc(pr.name)}</span>${chips}</div>`;
   }).join("");
   return `<div class="card">
-    <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <p class="sub" style="margin:0">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
+      <button class="btn sm" id="statBtn" style="margin-left:auto">${ic("chart")} Statistik</button>
+    </div>
     <div class="statwrap">${rows}</div></div>`;
 }
 
@@ -2144,6 +2366,7 @@ async function refreshBellCount(){
   const sw = await db.from("rs_task_swap").select(SWAP_SEL).neq("status","declined");
   if(!sw.error) n += (sw.data||[]).filter(swapBellRelevant).length;
   try{ dueReminders = await getDueReminders(); n += dueReminders.length; }catch(e){}
+  try{ n += (await getDeadlineWarnings()).length; }catch(e){}
   if(n > 0){ b.textContent = n; b.style.display = ""; } else b.style.display = "none";
 }
 setInterval(()=>{ if(session) refreshBellCount(); }, 60000);
@@ -2160,6 +2383,8 @@ async function openBellMenu(){
   const mine = (r.data||[]).filter(bellRelevant);
   let rems = [];
   try{ rems = await getDueReminders(); }catch(e){}
+  let dlWarns = [];
+  try{ dlWarns = await getDeadlineWarnings(); }catch(e){}
   const iq = await db.from("invite").select("id,invited_by,kind,staff_perm,invite_name,stable(name),profile(name)").eq("email", session.email).eq("status","pending");
   const invs = iq.error ? [] : (iq.data||[]);
   const tq = await db.from("task_notice").select("id,kind,task_name,stable(name)").eq("email", session.email).eq("seen", false).order("created_at",{ascending:false});
@@ -2168,7 +2393,11 @@ async function openBellMenu(){
   const leaves = (lq.error ? [] : (lq.data||[])).filter(x=> !(((x.rs_staff||{}).rs_staff_member)||[]).some(mm=> (mm.email||"").toLowerCase() === session.email));
   const swq = await db.from("rs_task_swap").select(SWAP_SEL).neq("status","declined").order("created_at",{ascending:false});
   const swaps = (swq.error ? [] : (swq.data||[])).filter(swapBellRelevant);
-  if(!mine.length && !rems.length && !invs.length && !tns.length && !leaves.length && !swaps.length){ m.innerHTML = `<div class="menuhead sub">Inga nya notiser</div>`; return; }
+  if(!mine.length && !rems.length && !invs.length && !tns.length && !leaves.length && !swaps.length && !dlWarns.length){ m.innerHTML = `<div class="menuhead sub">Inga nya notiser</div>`; return; }
+  const dlHtml = dlWarns.map(x=>
+    `<div class="notif"><div>⚠ Alla pass är inte tagna för <b>${esc(x.label)}</b> — ${x.missing} ${x.missing===1?"pass":"pass"} saknar folk</div>
+      <div class="meta2">${esc(x.stable)}</div>
+      <div class="notifbtns"><button class="btn sm" data-dlok="${esc(x.key)}">Ok</button></div></div>`).join("");
   const swHtml = swaps.map(s=>{
     const g = (s.giver && s.giver.name) || "?", t = (s.taker && s.taker.name) || "?";
     const d = new Date(s.work_date + "T00:00:00");
@@ -2209,7 +2438,7 @@ async function openBellMenu(){
       <div class="meta2">${esc((v.stable&&v.stable.name)||"")}</div>
       <div class="notifbtns"><button class="btn sm" data-tnok="${v.id}">Ok</button></div></div>`;
   }).join("");
-  const invHtml = lvHtml + swHtml + tnHtml + invs.map(v=>
+  const invHtml = dlHtml + lvHtml + swHtml + tnHtml + invs.map(v=>
     `<div class="notif"><div>📩 <b>${esc(v.invited_by)}</b> har bjudit in dig till stallet <b>${esc((v.stable&&v.stable.name)||"?")}</b></div>
       <div class="meta2">Som ${esc(inviteRoleLabel(v))}</div>
       <div class="notifbtns"><button class="btn primary sm" data-invacc="${v.id}">Acceptera</button><button class="btn sm" data-invdec="${v.id}">Avböj</button></div></div>`).join("");
@@ -2243,6 +2472,13 @@ async function openBellMenu(){
   m.querySelectorAll("[data-seen]").forEach(b=> b.onclick = async (e)=>{
     e.stopPropagation();
     await db.rpc("mark_request_seen", { p_request: b.getAttribute("data-seen") });
+    await refreshBellCount();
+    openBellMenu();
+  });
+  m.querySelectorAll("[data-dlok]").forEach(b=> b.onclick = async (e)=>{
+    e.stopPropagation();
+    try{ localStorage.setItem(b.getAttribute("data-dlok"), "1"); }catch(err){}
+    dlWarnCache = { at: 0, list: [] };
     await refreshBellCount();
     openBellMenu();
   });
@@ -2881,6 +3117,56 @@ async function getDueReminders(){
   });
   return out.sort((a,c)=> a.start - c.start);
 }
+/* Deadline-varningar till klockan: kollar de jourstall jag är med i som har deadline satt,
+   och varnar om nästa periods pass inte är fyllda när deadline passerat. */
+let dlWarnCache = { at: 0, list: [] };
+async function getDeadlineWarnings(){
+  if(!session) return [];
+  if(Date.now() - dlWarnCache.at < 5*60*1000) return dlWarnCache.list;
+  const out = [];
+  try{
+    const sq = await db.from("stable").select("id,name,kind,rotation_basis,deadline_days").eq("kind","stall");
+    const stables = (sq.error ? [] : (sq.data||[])).filter(x=> x.deadline_days != null);
+    for(const st of stables){
+      const basis = st.rotation_basis === "month" ? "month" : "week";
+      const now = new Date();
+      // nästa period: nästa måndag respektive den 1:a i nästa månad
+      const ps = basis === "month"
+        ? new Date(now.getFullYear(), now.getMonth()+1, 1)
+        : (function(){ const m = startOfWeek(now); m.setDate(m.getDate()+7); return m; })();
+      const pe = basis === "month"
+        ? new Date(ps.getFullYear(), ps.getMonth()+1, 0)
+        : (function(){ const e = new Date(ps); e.setDate(e.getDate()+6); return e; })();
+      const dl = new Date(ps); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
+      if(now < dl) continue;
+      const [pq, bq] = await Promise.all([
+        db.from("pass_def").select("*").eq("stable_id", st.id),
+        db.from("booking").select("pass_id,pass_date").eq("stable_id", st.id).gte("pass_date", isoDate(ps)).lte("pass_date", isoDate(pe))
+      ]);
+      if(pq.error) continue;
+      const passes = pq.data||[], bks = bq.error?[]:bq.data;
+      const cnt = {}; bks.forEach(b2=>{ const k=b2.pass_id+"|"+b2.pass_date; cnt[k]=(cnt[k]||0)+1; });
+      let saknas = 0;
+      for(let d = new Date(ps); d <= pe; d.setDate(d.getDate()+1)){
+        const dISO = isoDate(d);
+        passes.forEach(p2=>{
+          if(!passApplies(p2, d)) return;
+          saknas += Math.max(0, (p2.capacity||1) - (cnt[p2.id+"|"+dISO]||0));
+        });
+      }
+      if(!saknas) continue;
+      const lbl = basis === "month"
+        ? ["januari","februari","mars","april","maj","juni","juli","augusti","september","oktober","november","december"][ps.getMonth()] + " " + ps.getFullYear()
+        : "vecka " + isoWeekNumber(ps);
+      const key = "stalljour.dl_" + st.id + "_" + isoDate(ps);
+      let seen = false; try{ seen = !!localStorage.getItem(key); }catch(e){}
+      if(seen) continue;
+      out.push({ key, stable: st.name, label: lbl, missing: saknas });
+    }
+  }catch(e){}
+  dlWarnCache = { at: Date.now(), list: out };
+  return out;
+}
 function remWhen(ts){
   const d = new Date(ts);
   const dISO = isoDate(d), tISO = isoDate(new Date());
@@ -2986,6 +3272,7 @@ async function renderChat(stableId){
     const g  = await db.from("duty_group").select("*").eq("stable_id", stableId).order("sort_order"); if(g.error) throw g.error;
     const pr = await db.from("profile").select("id,name,profile_member(email),horse(group_id)").eq("stable_id", stableId).order("created_at"); if(pr.error) throw pr.error;
     const myIds = pr.data.filter(p=> (p.profile_member||[]).some(m=> (m.email||"").toLowerCase() === session.email)).map(p=> p.id);
+    db.rpc("prune_chat", { p_stable: stableId }).then(()=>{}, ()=>{});   // meddelanden äldre än 60 dagar rensas
     const cm = await db.from("chat_member").select("group_id,profile_id");
     chatCtx = { stable: st.data, groups: g.data, profiles: pr.data, myIds, memberRows: cm.error ? [] : (cm.data||[]) };
     if(view.groupId) renderChatRoom(view.groupId);

@@ -218,7 +218,8 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 
 /* Schema */
 .dutybar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.9rem;padding:12px 16px}
-.dutychip{display:inline-flex;font-weight:700;color:#fff;padding:3px 11px;border-radius:999px}
+.dutychip{display:inline-flex;align-items:center;gap:6px;font-weight:700;color:#fff;padding:3px 11px;border-radius:999px;font-size:.85rem}
+.dutychip .dw{font-weight:600;opacity:.75;font-size:.78rem}
 .schedcard{padding:12px}
 .sgrid{display:grid;grid-template-columns:54px repeat(var(--cols,5),minmax(92px,1fr));gap:5px;min-width:0}
 .scorner{background:transparent}
