@@ -71,6 +71,17 @@ function isoWeekNumber(d){
 }
 function weekIndexOf(monday){ const a=new Date(ROT_ANCHOR); a.setHours(0,0,0,0); const m=new Date(monday); m.setHours(0,0,0,0); return Math.round((m-a)/(7*24*3600*1000)); }
 function dutyGroupForWeek(monday, groups, offset){ const n=groups.length; if(!n) return null; const idx=((weekIndexOf(monday)+(offset||0))%n+n)%n; return groups[idx]; }
+function monthIndexOf(d){ return (d.getFullYear()-ROT_ANCHOR.getFullYear())*12 + d.getMonth(); }
+/* Vilken grupp har jouren ett visst datum — per vecka eller per kalendermånad */
+function dutyGroupForDate(d, groups, offset, basis){
+  const n = (groups||[]).length; if(!n) return null;
+  const idx = basis === "month" ? monthIndexOf(d) + (offset||0) : weekIndexOf(startOfWeek(d)) + (offset||0);
+  return groups[((idx % n) + n) % n];
+}
+function dutyGroupNow(d){
+  if(!schedCtx) return null;
+  return dutyGroupForDate(d, schedCtx.groups, schedCtx.stable.rotation_offset, schedCtx.stable.rotation_basis);
+}
 function passApplies(p, d){
   // specialpass gäller bara sina egna datum
   if(p.is_special){
@@ -112,6 +123,10 @@ const TIME_OPTIONS = (()=>{ const a=[]; for(let h=0;h<24;h++) for(const m of [0,
 function capOpts(sel){ let o=""; for(let i=1;i<=10;i++) o += `<option value="${i}"${i===sel?" selected":""}>${i}</option>`; return o; }
 function capOptsPairs(cur){ const out=[]; for(let i=1;i<=10;i++) out.push([i, i===1 ? "1 person" : i+" personer"]); return out; }
 let weekStart2 = null;   // schemats vecka (måndag)
+let schedMode = "week";  // "day" | "week" | "month" — jourschemats vy
+let schedDayOff = 0;     // vald dag i dagvyn (0 = måndag)
+let schedMonth = null;   // första dagen i månadsvyns månad
+let schedPassSel = null; // valt pass (visar beskrivning och bokningar under schemat)
 let schedCtx = null;     // {stable, groups, passes, myProfiles, actingProfileId}
 let schedLogOpen = false; // händelseloggen utfälld?
 
@@ -584,6 +599,7 @@ async function renderStable(stableId){
     const st = await db.from("stable").select("*").eq("id", stableId).single();
     if(st.error) throw st.error;
     curOrgId = st.data.org_id || null;
+    stStableRow = st.data;
     curAdmin = await amIAdmin(stableId);
     el("stableHead").innerHTML = `
       <div class="schedeyebrow">Inställningar</div>
@@ -735,6 +751,7 @@ async function amIAdmin(stableId){
 /* ============ Stall-inställningar: trädvy ============ */
 let stOpen = {};        // vilka noder i trädet som är öppna
 let stStableId = null;
+let stStableRow = null;   // stallets rad (för inställningar som rotationsbas)
 let curOrgId = null;    // stallets (organisationens) id för aktuell del
 let stData = null;      // {groups, cats, passes, profiles}
 let focusProfileId = null;  // profil att öppna direkt (från Profil-menyn)
@@ -1051,6 +1068,11 @@ function renderStableTree(){
   t.push(tSect(172));
   t.push(`<div class="trow lvl0" data-t="schema">${ic("calendar")} Schema ${caret("schema")}</div>`);
   if(stOpen.schema){
+    if(curAdmin){
+      const basis = (stStableRow && stStableRow.rotation_basis) || "week";
+      t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Jourrotation</span>
+        <select id="rotbasis"><option value="week"${basis==="week"?" selected":""}>Ny grupp varje vecka</option><option value="month"${basis==="month"?" selected":""}>Ny grupp varje månad</option></select></div>`);
+    }
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
       stData.passes.forEach(p=> t.push(passRow(p)));
@@ -1076,6 +1098,13 @@ function renderStableTree(){
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
   host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
   host.querySelectorAll("[data-sthide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete stOpen[b.getAttribute("data-sthide")]; renderStableTree(); });
+  const rb = el("rotbasis");
+  if(rb) rb.onchange = async ()=>{
+    const r = await db.from("stable").update({ rotation_basis: rb.value }).eq("id", stStableId);
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/passregler.sql körts?)"); return; }
+    if(stStableRow) stStableRow.rotation_basis = rb.value;
+    if(schedCtx && schedCtx.stable && schedCtx.stable.id === stStableId) schedCtx.stable.rotation_basis = rb.value;
+  };
   host.querySelectorAll("[data-pfchange]").forEach(n=> n.onchange = (e)=>{ e.stopPropagation(); passCapture(); renderStableTree(); });
   host.querySelectorAll("[data-pfdate]").forEach(b=> b.onclick = (e)=>{
     e.stopPropagation(); passCapture();
@@ -1393,35 +1422,172 @@ function drawScheduleShell(){
 }
 
 function drawWeekNav(){
+  if(!schedMonth) schedMonth = new Date(weekStart2.getFullYear(), weekStart2.getMonth(), 1);
+  const MFULL = ["januari","februari","mars","april","maj","juni","juli","augusti","september","oktober","november","december"];
   const end = new Date(weekStart2); end.setDate(end.getDate()+6);
-  const duty = dutyGroupForWeek(weekStart2, schedCtx.groups, schedCtx.stable.rotation_offset);
+  const dayD = new Date(weekStart2); dayD.setDate(dayD.getDate()+schedDayOff);
+  // vilka grupper har jouren i det man tittar på (kan bli två om månadsrotation delar veckan)
+  const span = schedMode === "day" ? [dayD]
+    : schedMode === "month" ? [schedMonth]
+    : [weekStart2, end];
+  const duties = [];
+  span.forEach(d=>{ const g = dutyGroupNow(d); if(g && !duties.some(x=> x.id === g.id)) duties.push(g); });
+  const lbl = schedMode === "day" ? `${DAY_NAMES[dayD.getDay()]} ${dayD.getDate()}/${dayD.getMonth()+1}`
+    : schedMode === "month" ? `${MFULL[schedMonth.getMonth()]} ${schedMonth.getFullYear()}`
+    : `Vecka ${isoWeekNumber(weekStart2)}`;
+  const sub = schedMode === "week"
+    ? `${weekStart2.getDate()} ${MONTHS[weekStart2.getMonth()]} – ${end.getDate()} ${MONTHS[end.getMonth()]} · ${weekStart2.getFullYear()}`
+    : schedMode === "day" ? `Vecka ${isoWeekNumber(dayD)} · ${dayD.getFullYear()}` : "";
   el("weeknav").innerHTML = `
+    <div class="seg small" id="segSchedMode" style="justify-content:center;margin:0 auto 10px">
+      <button data-sm="day" class="${schedMode==="day"?"on":""}">Dag</button>
+      <button data-sm="week" class="${schedMode==="week"?"on":""}">Vecka</button>
+      <button data-sm="month" class="${schedMode==="month"?"on":""}">Månad</button>
+    </div>
     <div style="display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap">
       <button class="btn sm" id="wPrev">‹ Förra</button>
-      <button class="btn sm" id="wWeek" title="Till nuvarande vecka">Vecka ${isoWeekNumber(weekStart2)}</button>
+      <button class="btn sm" id="wWeek" title="Hoppa till idag">${esc(lbl)}</button>
       <button class="btn sm" id="wNext">Nästa ›</button>
     </div>
-    <div class="muted" style="font-size:.82rem;margin-top:6px">${weekStart2.getDate()} ${MONTHS[weekStart2.getMonth()]} – ${end.getDate()} ${MONTHS[end.getMonth()]} · ${weekStart2.getFullYear()}</div>
-    ${duty?`<div style="margin-top:8px"><span class="dutychip" style="background:${duty.color||'#4e9e6e'}">${esc(duty.name)}</span></div>`:""}`;
-  el("wPrev").onclick = ()=> shiftWeek2(-1);
-  el("wNext").onclick = ()=> shiftWeek2(1);
-  el("wWeek").onclick = ()=>{ weekStart2 = startOfWeek(new Date()); drawWeekNav(); drawGrid(); };
+    ${sub?`<div class="muted" style="font-size:.82rem;margin-top:6px">${esc(sub)}</div>`:""}
+    ${duties.length?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">${
+      duties.map(g=>`<span class="dutychip" style="background:${g.color||'#4e9e6e'}">${esc(g.name)}</span>`).join("")}</div>`:""}`;
+  el("segSchedMode").querySelectorAll("[data-sm]").forEach(b=> b.onclick = ()=>{
+    const m = b.getAttribute("data-sm");
+    if(schedMode === m) return;
+    schedMode = m; schedPassSel = null;
+    if(m === "month") schedMonth = new Date(weekStart2.getFullYear(), weekStart2.getMonth(), 1);
+    drawWeekNav(); drawGrid();
+  });
+  el("wPrev").onclick = ()=> shiftSched(-1);
+  el("wNext").onclick = ()=> shiftSched(1);
+  el("wWeek").onclick = ()=>{
+    const now = new Date();
+    weekStart2 = startOfWeek(now); schedDayOff = (now.getDay()+6)%7;
+    schedMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    drawWeekNav(); drawGrid();
+  };
+}
+/* Bläddra en dag, en vecka eller en månad beroende på vy */
+function shiftSched(dir){
+  if(schedMode === "day"){
+    let off = schedDayOff + dir;
+    weekStart2 = new Date(weekStart2);
+    if(off < 0){ weekStart2.setDate(weekStart2.getDate()-7); off = 6; }
+    if(off > 6){ weekStart2.setDate(weekStart2.getDate()+7); off = 0; }
+    schedDayOff = off;
+    schedMonth = new Date(weekStart2.getFullYear(), weekStart2.getMonth(), 1);
+    drawWeekNav(); drawGrid(); return;
+  }
+  if(schedMode === "month"){
+    schedMonth = new Date(schedMonth.getFullYear(), schedMonth.getMonth()+dir, 1);
+    weekStart2 = startOfWeek(schedMonth);
+    drawWeekNav(); drawGrid(); return;
+  }
+  shiftWeek2(dir);
 }
 function shiftWeek2(n){ weekStart2 = new Date(weekStart2); weekStart2.setDate(weekStart2.getDate()+n*7); drawWeekNav(); drawGrid(); }
+
+let schedDescEdit = null;   // vilket pass vars beskrivning redigeras
+/* Panel under schemat för valt pass: vilka som är bokade + beskrivningen (admin kan ändra) */
+function passPanel(pid, map, days){
+  const p = schedCtx.passes.find(x=> x.id === pid); if(!p) return "";
+  const dagar = days.filter(d=> passApplies(p, d));
+  const rows = dagar.map(d=>{
+    const dISO = isoDate(d);
+    const list = map[p.id+"|"+dISO] || [];
+    const cap = p.capacity || 1;
+    const who = list.length ? list.map(bk=> esc((bk.profile && bk.profile.name) || "?")).join(", ")
+      : `<span class="meta2">ingen bokad än</span>`;
+    const tag = list.length >= cap ? `<span class="tagpill">fullt</span>` : `<span class="tagpill st-pend">${list.length}/${cap}</span>`;
+    return `<div class="scsrow"><span class="scsname">${SHORT_DAYS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1}</span><span class="grow">${who}</span>${tag}</div>`;
+  }).join("");
+  const desc = (p.description || "").trim();
+  let descHtml;
+  if(curAdmin && schedDescEdit === p.id){
+    descHtml = `<div class="field" style="margin:0"><textarea id="pdesc" rows="3" placeholder="t.ex. hö till alla boxar, kolla vatten">${esc(desc)}</textarea>
+      <div class="editbtns" style="margin-top:8px"><button class="btn primary sm" data-pdsave="${p.id}">Spara</button><button class="btn sm" data-pdcancel="1">Avbryt</button></div></div>`;
+  } else if(curAdmin){
+    descHtml = `<div>${desc ? esc(desc) : `<span class="meta2">Ingen beskrivning än.</span>`}
+      <button class="btn sm" data-pdedit="${p.id}" style="margin-left:8px">${desc ? "Ändra" : "+ Lägg till beskrivning"}</button></div>`;
+  } else {
+    descHtml = desc ? `<div>${esc(desc)}</div>` : `<div class="meta2">Ingen beskrivning.</div>`;
+  }
+  return `<div class="card">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <b>${esc(p.name)}</b>
+      <span class="meta2">${esc(p.start_time||"")} · ${esc(passRuleText(p))}${p.capacity>1?" · "+p.capacity+" personer":""}</span>
+      ${p.is_special?`<span class="tagpill st-pend">special</span>`:""}
+    </div>
+    <div style="margin-top:10px"><b style="font-size:.85rem">Bokade</b>
+      ${rows || `<div class="meta2" style="margin-top:6px">Passet gäller inga dagar i den här vyn.</div>`}
+    </div>
+    <div style="margin-top:12px"><b style="font-size:.85rem">Beskrivning</b><div style="margin-top:6px">${descHtml}</div></div>
+  </div>`;
+}
+/* Månadsvy: en ruta per dag med hur många pass som är bokade av hur många som behövs */
+async function drawMonthGrid(keepScroll){
+  const host = el("gridHost");
+  const scrollY = window.scrollY;
+  const first = new Date(schedMonth.getFullYear(), schedMonth.getMonth(), 1);
+  const startO = (first.getDay()+6)%7;
+  const daysInMonth = new Date(first.getFullYear(), first.getMonth()+1, 0).getDate();
+  const weeks = Math.ceil((startO + daysInMonth) / 7);
+  const gridStart = new Date(first); gridStart.setDate(1 - startO);
+  const gridEnd = new Date(gridStart); gridEnd.setDate(gridEnd.getDate() + weeks*7 - 1);
+  const b = await db.from("booking").select("id,pass_id,pass_date,profile_id,profile(name)")
+    .eq("stable_id", schedCtx.stable.id).gte("pass_date", isoDate(gridStart)).lte("pass_date", isoDate(gridEnd));
+  if(b.error){ host.innerHTML = msg("Kunde inte hämta bokningar: " + b.error.message, "err"); return; }
+  const map = {};
+  (b.data||[]).forEach(bk=>{ const k = bk.pass_id+"|"+bk.pass_date; (map[k]=map[k]||[]).push(bk); });
+  const myIds = new Set(schedCtx.myProfiles.map(p=> p.id));
+  const tISO = isoDate(new Date());
+  let cells = [1,2,3,4,5,6,7].map(wd=> `<div class="mhead">${RS_WD[wd].slice(0,3)}</div>`).join("");
+  for(let i=0; i<weeks*7; i++){
+    const d = new Date(gridStart); d.setDate(gridStart.getDate()+i);
+    const inMonth = d.getMonth() === first.getMonth();
+    const dISO = isoDate(d);
+    let need = 0, got = 0, mine = 0;
+    if(inMonth) schedCtx.passes.forEach(p=>{
+      if(!passApplies(p, d)) return;
+      const list = map[p.id+"|"+dISO] || [];
+      need += (p.capacity||1); got += Math.min(list.length, p.capacity||1);
+      mine += list.filter(bk=> myIds.has(bk.profile_id)).length;
+    });
+    const chip = !inMonth ? ""
+      : need === 0 ? `<div class="mchip" style="background:transparent;color:var(--muted)">–</div>`
+      : `<div class="mchip" style="background:${got>=need?"var(--accent-soft)":"rgba(216,166,62,.18)"}">${got}/${need} bokat</div>`
+        + (mine ? `<div class="mchip" style="background:var(--mine-blk);border-left:3px solid var(--mine-brd)">${mine} ${mine===1?"eget pass":"egna pass"}</div>` : "");
+    cells += `<div class="mcell${inMonth?"":" mout"}${dISO===tISO?" mtoday":""}" ${inMonth?`data-mday="${dISO}"`:""}>
+      <div class="mnum">${d.getDate()}</div>${chip}</div>`;
+  }
+  host.innerHTML = `<div class="card"><div class="mgrid">${cells}</div>
+    <div class="meta2" style="margin-top:10px">Klicka på en dag för att öppna dagvyn.</div></div>`;
+  if(keepScroll) window.scrollTo(0, scrollY);
+  host.querySelectorAll("[data-mday]").forEach(c=> c.onclick = ()=>{
+    const d = new Date(c.getAttribute("data-mday") + "T00:00:00");
+    weekStart2 = startOfWeek(d); schedDayOff = (d.getDay()+6)%7;
+    schedMode = "day"; schedPassSel = null;
+    drawWeekNav(); drawGrid();
+  });
+}
 
 async function drawGrid(keepScroll){
   const host = el("gridHost");
   const scrollY = window.scrollY;
   if(!keepScroll) host.innerHTML = `<div class="card"><div class="empty">Laddar…</div></div>`;
-  const days = []; for(let i=0;i<7;i++){ const d=new Date(weekStart2); d.setDate(d.getDate()+i); days.push(d); }
-  const startISO = isoDate(days[0]), endISO = isoDate(days[6]);
+  if(schedMode === "month"){ await drawMonthGrid(keepScroll); return; }
+  const days = [];
+  if(schedMode === "day"){ const d = new Date(weekStart2); d.setDate(d.getDate()+schedDayOff); days.push(d); }
+  else for(let i=0;i<7;i++){ const d=new Date(weekStart2); d.setDate(d.getDate()+i); days.push(d); }
+  const startISO = isoDate(days[0]), endISO = isoDate(days[days.length-1]);
   const b = await db.from("booking").select("id,pass_id,pass_date,profile_id,booked_by,profile(name)")
     .eq("stable_id", schedCtx.stable.id).gte("pass_date", startISO).lte("pass_date", endISO);
   if(b.error){ host.innerHTML = msg("Kunde inte hämta bokningar: " + b.error.message, "err"); return; }
   const map = {};
   (b.data||[]).forEach(bk=>{ const k = bk.pass_id+"|"+bk.pass_date; (map[k]=map[k]||[]).push(bk); });
 
-  const duty = dutyGroupForWeek(weekStart2, schedCtx.groups, schedCtx.stable.rotation_offset);
+  const duty = dutyGroupNow(weekStart2);
   const myIds = new Set(schedCtx.myProfiles.map(p=>p.id));
   const passes = schedCtx.passes;
   const tISO = isoDate(new Date());
@@ -1445,7 +1611,7 @@ async function drawGrid(keepScroll){
   passes.forEach(p=>{
     const hu = schedCtx.catTint[p.category_id];
     const hstyle = hu != null ? ` style="background:hsla(${hu},45%,45%,.13);border-radius:8px"` : "";
-    html += `<div class="sph"${hstyle}><span class="pn">${esc(p.name)}</span><span class="pt">${esc(p.start_time||"")}${p.capacity>1?" · "+p.capacity+"p":""}</span></div>`;
+    html += `<div class="sph${schedPassSel===p.id?" sel":""}"${hstyle} data-selpass="${p.id}" title="Visa beskrivning och bokningar"><span class="pn">${esc(p.name)}</span><span class="pt">${esc(p.start_time||"")}${p.capacity>1?" · "+p.capacity+"p":""}${(p.description||"").trim()?" ⓘ":""}</span></div>`;
   });
   // en rad per veckodag (lodrätt)
   days.forEach(d=>{
@@ -1463,6 +1629,7 @@ async function drawGrid(keepScroll){
     passes.forEach(p=>{ html += scheduleCell(p, d, dISO, map, myIds, tISO); });
   });
   html += `</div></div>`;
+  if(schedPassSel) html += passPanel(schedPassSel, map, days);
   html += renderStats(tgt, myIds);   // statistiken under schemat
   html += `<div class="card">
     <div class="trow" data-logtoggle style="padding:6px 4px">${ic("list")} Händelselogg <span class="meta2">vecka ${isoWeekNumber(weekStart2)}</span> <span class="caret" style="margin-left:auto">${schedLogOpen?"▾":"▸"}</span></div>
@@ -1474,6 +1641,23 @@ async function drawGrid(keepScroll){
   host.querySelectorAll("[data-book]").forEach(btn=> btn.onclick = ()=> bookCell(btn.getAttribute("data-book"), btn.getAttribute("data-date")));
   host.querySelectorAll("[data-cancel]").forEach(btn=> btn.onclick = (e)=>{ e.stopPropagation(); cancelBooking(btn.getAttribute("data-cancel"), btn.getAttribute("data-cinfo"), btn.getAttribute("data-cprof"), btn.getAttribute("data-cmine") !== "0"); });
   host.querySelectorAll("[data-req]").forEach(chip=> chip.onclick = ()=> onChipClick(chip.getAttribute("data-req"), chip.getAttribute("data-pinfo")));
+  host.querySelectorAll("[data-selpass]").forEach(n=> n.onclick = ()=>{
+    const id = n.getAttribute("data-selpass");
+    schedPassSel = (schedPassSel === id) ? null : id;
+    schedDescEdit = null;
+    drawGrid(true);
+  });
+  host.querySelectorAll("[data-pdedit]").forEach(b2=> b2.onclick = (e2)=>{ e2.stopPropagation(); schedDescEdit = b2.getAttribute("data-pdedit"); drawGrid(true); });
+  host.querySelectorAll("[data-pdcancel]").forEach(b2=> b2.onclick = (e2)=>{ e2.stopPropagation(); schedDescEdit = null; drawGrid(true); });
+  host.querySelectorAll("[data-pdsave]").forEach(b2=> b2.onclick = async (e2)=>{
+    e2.stopPropagation();
+    const id = b2.getAttribute("data-pdsave");
+    const val = (el("pdesc").value||"").trim() || null;
+    const r = await db.from("pass_def").update({ description: val }).eq("id", id);
+    if(r.error){ alert("Kunde inte spara beskrivningen: " + r.error.message + " (har db/passregler.sql körts?)"); return; }
+    const p2 = schedCtx.passes.find(x=> x.id === id); if(p2) p2.description = val;
+    schedDescEdit = null; drawGrid(true);
+  });
   const lt = host.querySelector("[data-logtoggle]");
   if(lt) lt.onclick = ()=>{
     schedLogOpen = !schedLogOpen;
@@ -1569,7 +1753,7 @@ async function bookCell(passId, dISO){
   const label = `${(pass && pass.name) || "passet"}, ${DAY_NAMES[d.getDay()].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}`;
   let asked = false;
   // Är det min grupps jourvecka? Annars: fråga innan bokning.
-  const duty = dutyGroupForWeek(weekStart2, schedCtx.groups, schedCtx.stable.rotation_offset);
+  const duty = dutyGroupNow(weekStart2);
   if(duty){
     const prof = (schedCtx.profiles||[]).find(x=> x.id === pid);
     const myGroups = new Set(((prof && prof.horse) || []).map(h=> h.group_id).filter(Boolean));
@@ -1645,7 +1829,7 @@ function groupTurnNumber(monday){
 }
 
 function computeTargets(monday){
-  const duty = dutyGroupForWeek(monday, schedCtx.groups, schedCtx.stable.rotation_offset);
+  const duty = dutyGroupNow(monday);
   if(!duty) return null;
   // Hästar i den ansvariga gruppen (en häst = en enhet), stabil ordning.
   const horses = [];

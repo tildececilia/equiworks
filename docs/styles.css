@@ -225,6 +225,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .sph{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:5px 3px;text-align:center}
 .sph .pn{font-weight:700;font-size:.7rem;line-height:1.15}
 .sph .pt{font-size:.66rem;color:var(--accent);font-weight:600}
+.sph[data-selpass]{cursor:pointer;border-radius:8px}
+.sph[data-selpass]:hover{background:var(--accent-soft)}
+.sph.sel{box-shadow:0 0 0 2px var(--accent) inset;border-radius:8px}
 .sdl{display:flex;flex-direction:column;justify-content:center;padding:6px 4px;border:1px solid var(--line);border-radius:9px;background:var(--card-2);position:sticky;left:0;z-index:1}
 .sdl.today{box-shadow:0 0 0 1px var(--accent) inset}
 .sdl .dn{font-weight:700;font-size:.8rem}
