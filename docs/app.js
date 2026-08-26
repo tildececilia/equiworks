@@ -738,9 +738,13 @@ async function reloadStableData(){
 
 function caret(k){ return `<span class="caret">${stOpen[k]?"▾":"▸"}</span>`; }
 /* Lägg till-kontroller ligger dolda bakom en accentfärgad rad tills man klickar på den */
-function stAddCtl(showKey, label, controlHtml, lvl){
-  if(stOpen[showKey]) return `<div class="addhorse lvl${lvl}">${controlHtml}</div>`;
-  return `<div class="tleaf lvl${lvl}" data-stshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+function stAddCtl(showKey, label, controlHtml, lvl, plain){
+  if(!stOpen[showKey])
+    return `<div class="tleaf lvl${lvl}" data-stshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+  return `<div class="addbox lvl${lvl}">
+    <div class="addhead"><span>${esc(label)}</span><button class="x" data-sthide="${showKey}" title="Stäng">✕</button></div>
+    <div class="${plain ? "addfields" : "addhorse"}">${controlHtml}</div>
+  </div>`;
 }
 function isMyProfile(p){ return (p.profile_member||[]).some(m=> m.email && m.email.toLowerCase() === session.email); }
 function tbtns(kind, id, canEdit, canDel){
@@ -798,9 +802,12 @@ function profileNode(p, groupId, keyPrefix, lvl){
       const set = [p.remind1_min, p.remind2_min].filter(Boolean).map(remLbl);
       out.push(`<div class="trow lvl${sub} titem" data-t="${remKey}">⏰ Påminnelser om pass <span class="meta2">${set.length ? esc(set.join(" · ")) : "av"}</span> ${caret(remKey)}</div>`);
       if(stOpen[remKey]){
-        out.push(`<div class="tleaf lvl${sub} tmuted">Visas i notisklockan innan passet börjar.</div>`);
-        out.push(`<div class="addhorse lvl${sub}"><span class="meta2" style="min-width:96px">Påminnelse 1</span>${remSel(1)}</div>`);
-        out.push(`<div class="addhorse lvl${sub}"><span class="meta2" style="min-width:96px">Påminnelse 2</span>${remSel(2)}</div>`);
+        out.push(`<div class="addbox lvl${sub}">
+          <div class="addhead"><span>Påminnelser om pass</span></div>
+          <div class="meta2" style="margin-bottom:8px">Visas i notisklockan innan passet börjar.</div>
+          <div class="addhorse"><span class="meta2" style="min-width:96px">Påminnelse 1</span>${remSel(1)}</div>
+          <div class="addhorse"><span class="meta2" style="min-width:96px">Påminnelse 2</span>${remSel(2)}</div>
+        </div>`);
       }
     }
     horses.forEach(h=> out.push(horseRow(h, mine, sub)));
@@ -852,14 +859,12 @@ function passRow(p){
 
 function addPassForm(){
   const catO = `<option value="">Ingen kategori</option>` + stData.cats.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("");
-  return `<div class="editrow lvl2">
-    <div class="field"><label class="fld">Nytt pass — namn</label><input type="text" id="in_pass_name" placeholder="t.ex. Morgonfodring"></div>
+  return `<div class="field"><label class="fld">Namn</label><input type="text" id="in_pass_name" placeholder="t.ex. Morgonfodring"></div>
     <div class="field"><label class="fld">Tid</label><select id="in_pass_time">${TIME_OPTIONS.map(t=>`<option value="${t}"${t==="07:00"?" selected":""}>${t}</option>`).join("")}</select></div>
     <div class="field"><label class="fld">Kategori</label><select id="in_pass_cat">${catO}</select></div>
     <div class="field"><label class="fld">Dagar</label><select id="in_pass_days"><option value="all">Alla dagar</option><option value="weekday">Vardagar</option><option value="weekend">Helg</option></select></div>
     <div class="field"><label class="fld">Antal personer</label><select id="in_pass_cap">${capOpts(1)}</select></div>
-    <button class="btn primary sm" data-add="pass">+ Lägg till pass</button>
-  </div>`;
+    <button class="btn primary sm" data-add="pass">+ Lägg till pass</button>`;
 }
 
 function catRow(c){
@@ -910,8 +915,7 @@ function renderStableTree(){
     if(stOpen.pass){
       stData.passes.forEach(p=> t.push(passRow(p)));
       if(!stData.passes.length) t.push(`<div class="tleaf lvl2 tmuted">Inga pass än</div>`);
-      if(curAdmin) t.push(stOpen.add_pass ? addPassForm()
-        : `<div class="tleaf lvl2" data-stshow="add_pass" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} Lägg till pass</div>`);
+      if(curAdmin) t.push(stAddCtl("add_pass", "Lägg till pass", addPassForm(), 2, true));
     }
     t.push(`<div class="trow lvl1" data-t="kategorier">${ic("tag")} Kategorier ${caret("kategorier")}</div>`);
     if(stOpen.kategorier){
@@ -930,6 +934,7 @@ function renderStableTree(){
   host.querySelectorAll("[data-c]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); cancelEdit(); });
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
   host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
+  host.querySelectorAll("[data-sthide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete stOpen[b.getAttribute("data-sthide")]; renderStableTree(); });
   host.querySelectorAll("[data-mv]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); moveProfileDialog(b.getAttribute("data-mv")); });
   host.querySelectorAll("[data-gs]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); groupStatsDialog(b.getAttribute("data-gs")); });
   host.querySelectorAll("[data-mkadm]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); toggleAdminForProfile(b.getAttribute("data-mkadm")); });
@@ -3004,8 +3009,12 @@ function scDescField(key, val){
 function scDescVal(key){ const n = el("scdesc_"+key); if(!n) return undefined; const v = n.value.trim(); return v || null; }
 /* Lägg till-kontroller (select/input) visas först när man klickat på lägg till-raden */
 function scAddCtl(showKey, label, controlHtml, lvl){
-  if(scOpen[showKey]) return `<div class="addhorse lvl${lvl}">${controlHtml}</div>`;
-  return `<div class="tleaf lvl${lvl}" data-scshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+  if(!scOpen[showKey])
+    return `<div class="tleaf lvl${lvl}" data-scshow="${showKey}" style="color:var(--accent);cursor:pointer;font-weight:600">${ic("plus")} ${label}</div>`;
+  return `<div class="addbox lvl${lvl}">
+    <div class="addhead"><span>${esc(label)}</span><button class="x" data-schide="${showKey}" title="Stäng">✕</button></div>
+    <div class="addhorse">${controlHtml}</div>
+  </div>`;
 }
 /* Tvåstegsval: kategori först (+ "Övriga" för okategoriserade), sedan person/häst/elev.
    Utan kategorier → platt lista som vanligt. */
@@ -3485,6 +3494,7 @@ function renderSchoolTree(){
   host.querySelectorAll("[data-scc]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); const k=b.getAttribute("data-scc"); delete scOpen["edit_"+k]; delete scOpen["desc_"+k]; renderSchoolTree(); });
   host.querySelectorAll("[data-scadd]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); scOpen["add_"+b.getAttribute("data-scadd")] = true; renderSchoolTree(); });
   host.querySelectorAll("[data-scshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); scOpen[b.getAttribute("data-scshow")] = true; renderSchoolTree(); });
+  host.querySelectorAll("[data-schide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete scOpen[b.getAttribute("data-schide")]; renderSchoolTree(); });
   host.querySelectorAll("[data-permdesc]").forEach(sel=> sel.onchange = ()=>{
     const d = el(sel.getAttribute("data-permdesc")); if(d) d.textContent = PERM_DESC[sel.value] || "";
   });

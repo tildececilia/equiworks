@@ -63,6 +63,15 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .memchip .x2{border:none;background:rgba(0,0,0,.12);color:inherit;width:16px;height:16px;border-radius:999px;font-size:.6rem;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0}
 :root[data-theme="dark"] .memchip .x2{background:rgba(255,255,255,.2)}
 .profhead .x{margin-left:4px}
+/* Lägg till-ruta: egen ram med etikett så det syns vad fälten gäller */
+.addbox{border:1px dashed var(--accent);border-radius:12px;background:var(--accent-soft);padding:10px 12px;margin:8px 0}
+.addbox .addhead{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:8px}
+.addbox .addhead .x{border:none;background:transparent;color:var(--accent);font-size:.95rem;line-height:1;padding:2px 4px;cursor:pointer;border-radius:6px}
+.addbox .addhead .x:hover{background:rgba(0,0,0,.06)}
+.addbox .addhorse{margin:0}
+.addbox .addhorse + .addhorse{margin-top:8px}
+.addbox .addfields .field{margin-bottom:10px}
+.addbox .addfields .fld{font-size:.78rem}
 .editrow{border:1px solid var(--accent);border-radius:12px;padding:12px;margin-bottom:8px;background:var(--card-2)}
 .editrow .field{margin-bottom:10px}
 .editrow .field:last-of-type{margin-bottom:12px}
