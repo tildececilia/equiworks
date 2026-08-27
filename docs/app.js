@@ -272,8 +272,8 @@ function renderLogin(){
           <label class="fld" for="email">Mejladress</label>
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
-        <button class="btn primary block" id="loginBtn">Skicka inloggningslänk</button>
-        <div class="hint">Klicka på länken i mejlet så loggas du in. Du förblir inloggad på den här enheten.</div>
+        <button class="btn primary block" id="loginBtn">Skicka inloggningskod</button>
+        <div class="hint">Du får en sexsiffrig kod i mejlet som du skriver in här. Koden gäller en timme, och sedan förblir du inloggad på den här enheten.</div>
         ${codeBox()}`
     : `
         <p class="sub">Starta ett nytt stall eller en ridskola — du blir admin.</p>
@@ -290,8 +290,8 @@ function renderLogin(){
           <label class="fld" for="email">Din mejladress</label>
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
-        <button class="btn primary block" id="loginBtn">Skapa & skicka inloggningslänk</button>
-        <div class="hint">När du klickar på länken i mejlet loggas du in och stallet skapas — det dyker upp under "Mina stall".</div>`;
+        <button class="btn primary block" id="loginBtn">Skapa & skicka kod</button>
+        <div class="hint">Du får en sexsiffrig kod i mejlet. När du skrivit in den loggas du in och stallet skapas — det dyker upp under "Mina stall".</div>`;
   appEl.innerHTML = `
     <div class="center">
       <div class="card">
@@ -316,11 +316,11 @@ function renderLogin(){
    Här kan man i stället klistra in koden — eller hela länken — och logga in just här. */
 function codeBox(){
   return `<div class="codebox">
-    <button class="codetoggle" id="codeToggle" type="button">Har du en kod eller länk i mejlet? <span class="caret" id="codeCaret">▸</span></button>
+    <button class="codetoggle" id="codeToggle" type="button">Har du redan en kod? <span class="caret" id="codeCaret">▸</span></button>
     <div id="codeWrap" style="display:${loginStage === "code" ? "block" : "none"}">
-      <p class="hint" style="margin:8px 0">Öppnade du appen från hemskärmen loggar länken in fel fönster. Skriv in koden ur mejlet — eller kopiera hela länken (håll in den i mejlet → Kopiera) och klistra in här.</p>
-      <div class="field"><input type="text" id="loginCode" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456 – eller klistra in länken"></div>
-      <button class="btn block" id="codeBtn">Logga in här</button>
+      <p class="hint" style="margin:8px 0">Skriv in de sex siffrorna ur mejlet. Koden gäller en timme och bara en gång — begär en ny om den hunnit gå ut.</p>
+      <div class="field"><input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></div>
+      <button class="btn primary block" id="codeBtn">Logga in</button>
     </div>
   </div>`;
 }
@@ -343,7 +343,7 @@ async function doCodeLogin(){
   const raw = (el("loginCode").value||"").trim();
   const email = normEmail(el("email") ? el("email").value : "");
   if(!raw){ mEl.innerHTML = msg("Fältet är tomt — skriv in koden från mejlet här.", "err"); el("loginCode").focus(); return; }
-  if(raw.includes("{{")){ mEl.innerHTML = msg("Mejlet visar {{ .Token }} som text i stället för en kod — mallen i Supabase har inte sparats rätt. Använd länken i mejlet så länge.", "err"); return; }
+  if(raw.includes("{{")){ mEl.innerHTML = msg("Mejlet visar {{ .Token }} som text i stället för en kod — mejlmallen i Supabase har inte sparats rätt.", "err"); return; }
   mEl.innerHTML = "";
   const label = btn.textContent; btn.classList.add("spin"); btn.textContent = "…";
   let r;
@@ -397,9 +397,13 @@ async function doLogin(){
   const { error } = await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
   btn.classList.remove("spin"); btn.textContent = btnLabel;
   if(error){ mEl.innerHTML = msg("Kunde inte skicka: " + error.message, "err"); return; }
-  mEl.innerHTML = msg(loginMode === "create"
-    ? "Vi skickade en länk till " + email + ". Klicka på den så loggas du in och stallet skapas."
-    : "Vi skickade en inloggningslänk till " + email + ". Öppna mejlet och klicka på länken.", "ok");
+  // koden är det enda som behövs — visa fältet direkt så ingen letar efter en länk
+  loginStage = "code";
+  renderLogin();
+  if(el("email")) el("email").value = email;
+  el("loginMsg").innerHTML = msg("Vi skickade en sexsiffrig kod till " + email + ". Skriv in den här nedanför"
+    + (loginMode === "create" ? " så skapas stallet." : "."), "ok");
+  setTimeout(()=>{ if(el("loginCode")) el("loginCode").focus(); }, 60);
 }
 
 async function handlePendingCreate(){
@@ -2431,7 +2435,7 @@ async function profileAction(act){
   if(act==="chmail"){ changeEmailDialog(); return; }
   if(act==="viewas"){ if(await refreshAdminFlag()) viewAsDialog(); return; }
   if(act==="logout"){
-    if(!(await confirmDialog("Vill du logga ut? Du behöver en ny inloggningslänk via mejl för att logga in igen.", { title:"Logga ut", okText:"Ja, logga ut", primary:true }))) return;
+    if(!(await confirmDialog("Vill du logga ut? Du behöver en ny inloggningskod via mejl för att logga in igen.", { title:"Logga ut", okText:"Ja, logga ut", primary:true }))) return;
     await db.auth.signOut(); view = { name:"home", stableId:null }; return;
   }
 }
@@ -2863,7 +2867,7 @@ async function inviteDialog(){
     }catch(e){ mailNote = " Obs: mejlet kunde inte skickas — be personen logga in själv på appen."; }
     ov.remove();
     infoDialog((resent ? "Inbjudan till " + email + " är skickad om! " : "Inbjudan till " + email + " är skickad! ")
-      + "Personen får ett mejl med inloggningslänk och svarar sedan på inbjudan i notisklockan." + mailNote, resent ? "Inbjudan omskickad" : "Inbjudan skickad");
+      + "Personen får ett mejl med en inloggningskod, skriver in den i appen och svarar sedan på inbjudan i notisklockan." + mailNote, resent ? "Inbjudan omskickad" : "Inbjudan skickad");
   };
 }
 async function resolveRequest(id, accept){
@@ -4590,7 +4594,7 @@ async function scAdd(spec){
   await reloadSchool();
 }
 
-/* Välkomstmejl med inloggningslänk när någons mejladress läggs till (alla roller) */
+/* Välkomstmejl med inloggningskod när någons mejladress läggs till (alla roller) */
 async function sendWelcomeMail(email){
   try{
     email = normEmail(email);
