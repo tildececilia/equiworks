@@ -4594,6 +4594,7 @@ async function scAdd(spec){
 }
 
 /* Välkomstmejl med inloggningskod när någons mejladress läggs till (alla roller) */
+const INVITE_FN = "dynamic-processor";   // edge function som skickar inbjudningsmejlet
 async function sendWelcomeMail(email, stableId, roll){
   email = normEmail(email);
   if(!email || !email.includes("@") || email === session.email) return;
@@ -4601,7 +4602,8 @@ async function sendWelcomeMail(email, stableId, roll){
   // vårt eget inbjudningsmejl: bara en länk till appen, ingen kod och ingen tidsgräns
   if(sid){
     try{
-      const r = await db.functions.invoke("invite-mail", { body: { email, stable_id: sid, role: roll || "" } });
+      // funktionen fick Supabases föreslagna namn när den skapades i editorn
+      const r = await db.functions.invoke(INVITE_FN, { body: { email, stable_id: sid, role: roll || "" } });
       if(!r.error) return;
     }catch(e){}
   }
