@@ -2809,6 +2809,7 @@ async function inviteDialog(){
     <div id="iv_msg"></div>
     <div class="modal-btns"><button class="btn" id="iv_cancel">Avbryt</button><button class="btn primary" id="iv_send">Skicka inbjudan</button></div></div>`;
   document.body.appendChild(ov);
+  const ROLE_LBL = { "staff:none":"stallpersonal", "staff:teacher":"ridlärare", "admin":"admin" };
   const ROLE_DESC = {
     "staff:none": "Ser scheman och inställningar, ändrar inget",
     "staff:teacher": "Ändrar lektioner, elever och hästar",
@@ -2858,12 +2859,10 @@ async function inviteDialog(){
       if(u.error){ el("iv_msg").innerHTML = msg("Kunde inte skicka om inbjudan: " + u.error.message, "err"); return; }
       resent = true;
     }
-    // skicka inloggningsmejl — länken loggar in personen, inbjudan väntar sedan i notisklockan
+    // inbjudningsmejl med länk till appen — inbjudan väntar sedan i notisklockan
     let mailNote = "";
     try{
-      const redirect = window.location.origin + window.location.pathname;
-      const m = await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
-      if(m.error) mailNote = " Obs: mejlet kunde inte skickas (" + m.error.message + ") — be personen logga in själv på appen.";
+      await sendWelcomeMail(email, sid, ROLE_LBL[roleV] || "");
     }catch(e){ mailNote = " Obs: mejlet kunde inte skickas — be personen logga in själv på appen."; }
     ov.remove();
     infoDialog((resent ? "Inbjudan till " + email + " är skickad om! " : "Inbjudan till " + email + " är skickad! ")
@@ -4595,10 +4594,19 @@ async function scAdd(spec){
 }
 
 /* Välkomstmejl med inloggningskod när någons mejladress läggs till (alla roller) */
-async function sendWelcomeMail(email){
+async function sendWelcomeMail(email, stableId, roll){
+  email = normEmail(email);
+  if(!email || !email.includes("@") || email === session.email) return;
+  const sid = stableId || stStableId || scStableId;
+  // vårt eget inbjudningsmejl: bara en länk till appen, ingen kod och ingen tidsgräns
+  if(sid){
+    try{
+      const r = await db.functions.invoke("invite-mail", { body: { email, stable_id: sid, role: roll || "" } });
+      if(!r.error) return;
+    }catch(e){}
+  }
+  // funktionen är inte deployad än → gamla vägen, så ingen blir utan mejl
   try{
-    email = normEmail(email);
-    if(!email || !email.includes("@") || email === session.email) return;
     const redirect = window.location.origin + window.location.pathname;
     await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
   }catch(e){}
