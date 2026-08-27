@@ -273,7 +273,7 @@ function renderLogin(){
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
         <button class="btn primary block" id="loginBtn">Skicka inloggningskod</button>
-        <div class="hint">Du får en sexsiffrig kod i mejlet som du skriver in här. Koden gäller en timme, och sedan förblir du inloggad på den här enheten.</div>
+        <div class="hint">Du får en kod i mejlet som du skriver in här. Koden gäller en timme, och sedan förblir du inloggad på den här enheten.</div>
         ${codeBox()}`
     : `
         <p class="sub">Starta ett nytt stall eller en ridskola — du blir admin.</p>
@@ -291,7 +291,7 @@ function renderLogin(){
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
         <button class="btn primary block" id="loginBtn">Skapa & skicka kod</button>
-        <div class="hint">Du får en sexsiffrig kod i mejlet. När du skrivit in den loggas du in och stallet skapas — det dyker upp under "Mina stall".</div>`;
+        <div class="hint">Du får en kod i mejlet. När du skrivit in den loggas du in och stallet skapas — det dyker upp under "Mina stall".</div>`;
   appEl.innerHTML = `
     <div class="center">
       <div class="card">
@@ -318,7 +318,7 @@ function codeBox(){
   return `<div class="codebox">
     <button class="codetoggle" id="codeToggle" type="button">Har du redan en kod? <span class="caret" id="codeCaret">▸</span></button>
     <div id="codeWrap" style="display:${loginStage === "code" ? "block" : "none"}">
-      <p class="hint" style="margin:8px 0">Skriv in de sex siffrorna ur mejlet. Koden gäller en timme och bara en gång — begär en ny om den hunnit gå ut.</p>
+      <p class="hint" style="margin:8px 0">Skriv in siffrorna ur mejlet. Koden gäller en timme och bara en gång — begär en ny om den hunnit gå ut.</p>
       <div class="field"><input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></div>
       <button class="btn primary block" id="codeBtn">Logga in</button>
     </div>
@@ -358,7 +358,7 @@ async function doCodeLogin(){
       btn.classList.remove("spin"); btn.textContent = label;
       mEl.innerHTML = /^https?:\/\//i.test(raw)
         ? msg("Den där länken innehåller ingen inloggningsnyckel — den går via en mellanhand (klickspårning). Använd koden i mejlet i stället.", "err")
-        : msg("Det där ser inte ut som koden: jag hittade " + code.length + " siffror i \"" + raw.slice(0,24) + "\". Koden i mejlet är sex siffror i rad.", "err");
+        : msg("Det där ser inte ut som koden: jag hittade " + code.length + " siffror i \"" + raw.slice(0,24) + "\". Koden i mejlet är en rad siffror utan mellanslag.", "err");
       return;
     }
     if(!email.includes("@")){
@@ -401,7 +401,7 @@ async function doLogin(){
   loginStage = "code";
   renderLogin();
   if(el("email")) el("email").value = email;
-  el("loginMsg").innerHTML = msg("Vi skickade en sexsiffrig kod till " + email + ". Skriv in den här nedanför"
+  el("loginMsg").innerHTML = msg("Vi skickade en kod till " + email + ". Skriv in den här nedanför"
     + (loginMode === "create" ? " så skapas stallet." : "."), "ok");
   setTimeout(()=>{ if(el("loginCode")) el("loginCode").focus(); }, 60);
 }
@@ -1556,7 +1556,8 @@ async function doAdd(spec){
     if(!r.error && email !== session.email){
       // skapa inbjudan — syns i personens notisklocka när hen loggar in (fel ignoreras, t.ex. dubblett)
       await db.from("invite").insert({ stable_id: stStableId, profile_id: b, email, invited_by: session.email });
-      sendWelcomeMail(email);
+      const note = await sendWelcomeMail(email, stStableId);
+      if(note) infoDialog(note.replace(/^ Obs: /, ""), "Mejlet gick inte iväg");
     } }
   if(kind==="horse"){ const name=(el("in_horse_"+a+"_"+b).value||"").trim(); const gid=el("in_horsegrp_"+a+"_"+b).value||null;
     if(!name){ await infoDialog("Skriv hästens namn i fältet först, välj grupp och tryck sedan på + Lägg till häst.", "Namn saknas"); return; }
@@ -2862,7 +2863,7 @@ async function inviteDialog(){
     // inbjudningsmejl med länk till appen — inbjudan väntar sedan i notisklockan
     let mailNote = "";
     try{
-      await sendWelcomeMail(email, sid, ROLE_LBL[roleV] || "");
+      mailNote = await sendWelcomeMail(email, sid, ROLE_LBL[roleV] || "");
     }catch(e){ mailNote = " Obs: mejlet kunde inte skickas — be personen logga in själv på appen."; }
     ov.remove();
     infoDialog((resent ? "Inbjudan till " + email + " är skickad om! " : "Inbjudan till " + email + " är skickad! ")
@@ -4597,21 +4598,27 @@ async function scAdd(spec){
 const INVITE_FN = "dynamic-processor";   // edge function som skickar inbjudningsmejlet
 async function sendWelcomeMail(email, stableId, roll){
   email = normEmail(email);
-  if(!email || !email.includes("@") || email === session.email) return;
+  if(!email || !email.includes("@") || email === session.email) return "";
   const sid = stableId || stStableId || scStableId;
+  let varfor = "";
   // vårt eget inbjudningsmejl: bara en länk till appen, ingen kod och ingen tidsgräns
   if(sid){
     try{
       // funktionen fick Supabases föreslagna namn när den skapades i editorn
       const r = await db.functions.invoke(INVITE_FN, { body: { email, stable_id: sid, role: roll || "" } });
-      if(!r.error) return;
-    }catch(e){}
-  }
-  // funktionen är inte deployad än → gamla vägen, så ingen blir utan mejl
+      if(!r.error) return "";
+      varfor = r.error.message || "okänt fel";
+      // felmeddelandet från funktionen ligger i svarskroppen
+      try{ const kropp = await r.error.context.json(); if(kropp && kropp.error) varfor = kropp.error; }catch(e){}
+    }catch(e){ varfor = e.message || "kunde inte nå funktionen"; }
+  } else varfor = "vet inte vilket stall adressen hör till";
+  // gick inte → gamla vägen, så ingen blir utan mejl
   try{
     const redirect = window.location.origin + window.location.pathname;
     await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
   }catch(e){}
+  console.warn("Inbjudningsmejlet gick inte iväg:", varfor);
+  return " Obs: inbjudningsmejlet kunde inte skickas (" + varfor + ") — personen fick i stället ett vanligt inloggningsmejl med kod.";
 }
 /* Notis i klockan till personens mejl när hen sätts på eller tas bort från ett arbetspass */
 async function sendTaskNotice(staffId, taskName, kind){

@@ -60,19 +60,27 @@ Deno.serve(async (req) => {
   // vem ringer?
   const { data: userData, error: userErr } = await admin.auth.getUser(jwt);
   const avsandarMejl = userData?.user?.email?.toLowerCase();
-  if (userErr || !avsandarMejl) return svar({ error: "Kunde inte läsa inloggningen" }, 401);
+  if (userErr || !avsandarMejl) {
+    console.log("STOPP: kunde inte läsa inloggningen", userErr?.message);
+    return svar({ error: "Kunde inte läsa inloggningen" }, 401);
+  }
+  console.log("anrop från", avsandarMejl);
 
   let kropp: { email?: string; stable_id?: string; role?: string };
   try { kropp = await req.json(); } catch { return svar({ error: "Ogiltig JSON" }, 400); }
 
   const till = (kropp.email || "").trim().toLowerCase();
   const stallId = kropp.stable_id || "";
-  if (!till.includes("@") || !stallId) return svar({ error: "email och stable_id krävs" }, 400);
+  console.log("ska skicka till", till, "för stall", stallId);
+  if (!till.includes("@") || !stallId) {
+    console.log("STOPP: email eller stable_id saknas");
+    return svar({ error: "email och stable_id krävs" }, 400);
+  }
   if (till === avsandarMejl) return svar({ ok: true, skipped: "egen adress" });
 
   // stallet och behörigheten: bara admin i organisationen får bjuda in
   const { data: stall } = await admin.from("stable").select("id,name,org_id").eq("id", stallId).single();
-  if (!stall) return svar({ error: "Stallet finns inte" }, 404);
+  if (!stall) { console.log("STOPP: stallet finns inte", stallId); return svar({ error: "Stallet finns inte" }, 404); }
   const { data: adminrader } = await admin.from("org_admin").select("org_id").eq("email", avsandarMejl);
   let farSkicka = (adminrader || []).some((r: { org_id: string }) => r.org_id === stall.org_id);
   if (!farSkicka) {
@@ -84,7 +92,11 @@ Deno.serve(async (req) => {
       .eq("profile.stable_id", stall.id);
     farSkicka = (medlem || []).length > 0;
   }
-  if (!farSkicka) return svar({ error: "Du är inte med i det här stallet" }, 403);
+  if (!farSkicka) {
+    console.log("STOPP: saknar behörighet —", avsandarMejl, "är varken admin i org", stall.org_id, "eller medlem i", stall.id);
+    return svar({ error: "Du är inte med i det här stallet" }, 403);
+  }
+  console.log("behörighet ok, skickar via Brevo");
 
   const appUrl = Deno.env.get("APP_URL") || "https://tildececilia.github.io/equiworks/";
   const svarPost = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -103,7 +115,9 @@ Deno.serve(async (req) => {
 
   if (!svarPost.ok) {
     const text = await svarPost.text();
-    return svar({ error: "Brevo nekade utskicket: " + text }, 502);
+    console.log("STOPP: Brevo svarade", svarPost.status, text);
+    return svar({ error: "Brevo nekade utskicket (" + svarPost.status + "): " + text }, 502);
   }
+  console.log("KLART: mejl skickat till", till);
   return svar({ ok: true });
 });
