@@ -2867,7 +2867,7 @@ async function inviteDialog(){
     }catch(e){ mailNote = " Obs: mejlet kunde inte skickas — be personen logga in själv på appen."; }
     ov.remove();
     infoDialog((resent ? "Inbjudan till " + email + " är skickad om! " : "Inbjudan till " + email + " är skickad! ")
-      + "Personen får ett mejl med en inloggningskod, skriver in den i appen och svarar sedan på inbjudan i notisklockan." + mailNote, resent ? "Inbjudan omskickad" : "Inbjudan skickad");
+      + "Personen får ett välkomstmejl med länk till appen, loggar in med sin mejladress och en kod, och svarar sedan på inbjudan i notisklockan." + mailNote, resent ? "Inbjudan omskickad" : "Inbjudan skickad");
   };
 }
 async function resolveRequest(id, accept){
