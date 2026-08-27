@@ -118,7 +118,7 @@ function dutyHorseOrder(ps){
 /* När öppnar bokningen för ett datum — och är det min tur än? */
 function releaseInfo(d){
   const st = (schedCtx && schedCtx.stable) || {};
-  if(st.release_days == null) return { always:true, open:true, started:true, freeForAll:true };
+  if(!harPerioder(st) || st.release_days == null) return { always:true, open:true, started:true, freeForAll:true, order:[] };
   const ps = periodStart(d);
   const openAt = new Date(ps); openAt.setDate(openAt.getDate() - st.release_days); openAt.setHours(0,0,0,0);
   const now = Date.now();
@@ -145,8 +145,12 @@ function shortWhen(dt){
 }
 function dutyGroupNow(d){
   if(!schedCtx) return null;
-  return dutyGroupForDate(d, schedCtx.groups, schedCtx.stable.rotation_offset, schedCtx.stable.rotation_basis);
+  const st = schedCtx.stable || {};
+  if(st.use_groups === false || st.rotation_basis === "none") return null;   // alla bokar tillsammans / löpande
+  return dutyGroupForDate(d, schedCtx.groups, st.rotation_offset, st.rotation_basis);
 }
+/* Kör stallet i perioder alls? */
+function harPerioder(st){ st = st || (schedCtx && schedCtx.stable) || {}; return st.rotation_basis !== "none"; }
 function passApplies(p, d){
   // specialpass gäller bara sina egna datum
   if(p.is_special){
@@ -634,17 +638,49 @@ function createOrgDialog(){
   ov.innerHTML = `<div class="modal"><h3>Skapa nytt stall</h3>
     <div class="field"><label class="fld">Stallets namn</label><input type="text" id="co_name" placeholder="t.ex. RHC" maxlength="40"></div>
     <div class="field"><label class="fld">Första delen</label><select id="co_kind"><option value="stall">Jourschema</option><option value="ridskola">Ridskola</option></select></div>
+    <div id="co_jour">
+      <div class="field"><label class="fld">Hur ser schemat ut?</label>
+        <select id="co_basis">
+          <option value="none">Löpande — man skriver upp sig när som helst</option>
+          <option value="week">Perioder, en ny varje vecka</option>
+          <option value="month">Perioder, en ny varje månad</option>
+        </select>
+        <div class="meta2" style="margin-top:5px">Med perioder kan grupper turas om, och du kan sätta deadline och släppa passen en tid innan. Löpande håller schemat öppet hela tiden.</div>
+      </div>
+      <div class="field" id="co_groupfield"><label class="fld">Vem tar passen i en period?</label>
+        <select id="co_groups">
+          <option value="0">Alla bokar tillsammans</option>
+          <option value="1">Grupperna turas om att ha jouren</option>
+        </select></div>
+    </div>
     <div id="co_msg"></div>
     <div class="modal-btns"><button class="btn" id="co_cancel">Avbryt</button><button class="btn primary" id="co_go">Skapa</button></div></div>`;
   document.body.appendChild(ov);
   const done = ()=> ov.remove();
   ov.querySelector("#co_cancel").onclick = done;
   ov.onclick = (e)=>{ if(e.target===ov) done(); };
+  // jourvalen syns bara för jourschema
+  const visaJour = ()=>{
+    const j = ov.querySelector("#co_jour");
+    j.style.display = ov.querySelector("#co_kind").value === "stall" ? "" : "none";
+    // utan perioder finns inget att turas om, så gruppfrågan är inte aktuell
+    ov.querySelector("#co_groupfield").style.display = ov.querySelector("#co_basis").value === "none" ? "none" : "";
+  };
+  ov.querySelector("#co_kind").onchange = visaJour;
+  ov.querySelector("#co_basis").onchange = visaJour;
+  visaJour();
   ov.querySelector("#co_go").onclick = async ()=>{
     const name = (ov.querySelector("#co_name").value||"").trim();
     if(!name){ ov.querySelector("#co_msg").innerHTML = msg("Ge stallet ett namn.", "err"); return; }
-    const { data, error } = await db.rpc("create_stable", { p_name: name, p_kind: ov.querySelector("#co_kind").value });
+    const kind = ov.querySelector("#co_kind").value;
+    const { data, error } = await db.rpc("create_stable", { p_name: name, p_kind: kind });
     if(error){ ov.querySelector("#co_msg").innerHTML = msg("Kunde inte skapa: " + error.message, "err"); return; }
+    if(kind === "stall" && data){
+      const basis = ov.querySelector("#co_basis").value;
+      const patch = { rotation_basis: basis, use_groups: basis !== "none" && ov.querySelector("#co_groups").value === "1" };
+      const u = await db.from("stable").update(patch).eq("id", data);
+      if(u.error){ ov.querySelector("#co_msg").innerHTML = msg("Stallet skapades, men inställningarna kunde inte sparas: " + u.error.message + " (har db/lopande.sql körts?)", "err"); return; }
+    }
     done();
     view = { name:"stable", stableId: data };
     render();
@@ -940,9 +976,10 @@ function profileNode(p, groupId, keyPrefix, lvl){
     }
     horses.forEach(h=> out.push(horseRow(h, mine, sub)));
     if(may){
+      const visaGrp = (stStableRow || {}).use_groups !== false;
       const gsel = `<option value="">Ingen grupp</option>` + stData.groups.map(g=>`<option value="${g.id}"${g.id===groupId?" selected":""}>${esc(g.name)}</option>`).join("");
       out.push(stAddCtl(`add_horse_${keyPrefix}_${p.id}`, "Lägg till häst",
-        `<input type="text" id="in_horse_${keyPrefix}_${p.id}" placeholder="Hästens namn"><select id="in_horsegrp_${keyPrefix}_${p.id}">${gsel}</select><button class="btn sm" data-add="horse:${keyPrefix}:${p.id}">+ Lägg till häst</button>`, sub));
+        `<input type="text" id="in_horse_${keyPrefix}_${p.id}" placeholder="Hästens namn"><select id="in_horsegrp_${keyPrefix}_${p.id}"${visaGrp?"":` style="display:none"`}>${gsel}</select><button class="btn sm" data-add="horse:${keyPrefix}:${p.id}">+ Lägg till häst</button>`, sub));
     }
   }
   return out.join("");
@@ -1127,47 +1164,32 @@ function catRow(c, lvl){
 function renderStableTree(){
   const host = el("stTreeCard"); if(!host || !stData) return;
   const t = [];
-  t.push(tSect(150));
-  t.push(`<div class="trow lvl0" data-t="grupper">${ic("users")} Grupper ${caret("grupper")}</div>`);
-  if(stOpen.grupper){
-    stData.groups.forEach(g=> t.push(groupNode(g)));
-    const loose = stData.profiles.filter(p=> !(p.horse||[]).length || (p.horse||[]).some(h=>!h.group_id));
-    if(loose.length){
-      t.push(`<div class="trow lvl1" data-t="g_none">◌ Utan grupp ${caret("g_none")}</div>`);
-      if(stOpen.g_none) loose.forEach(p=> t.push(profileNode(p, null, "none")));
-    }
-    if(curAdmin){
-      t.push(stAddCtl("add_group", "Lägg till grupp",
-        `<input type="text" id="in_group" placeholder="Gruppens namn"><button class="btn sm" data-add="group">+ Grupp</button>`, 1));
-      t.push(stAddCtl("add_profile", "Lägg till profil",
-        `<input type="text" id="in_profile" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile">+ Profil</button>`, 1));
-    }
-  }
-  t.push(`</div>`);
-
-  // Profiler som egen flik: alla profiler samlade, med hästar oavsett grupp
-  t.push(tSect(196));
-  t.push(`<div class="trow lvl0" data-t="profiler">${ic("user")} Profiler ${caret("profiler")}</div>`);
-  if(stOpen.profiler){
-    const all = stData.profiles.slice().sort((a,b)=> (a.name||"").localeCompare(b.name||"", "sv"));
-    all.forEach(pr=> t.push(profileNode(pr, "*", "all", 1)));
-    if(!all.length) t.push(`<div class="tleaf lvl1 tmuted">Inga profiler än</div>`);
-    if(curAdmin) t.push(stAddCtl("add_profile2", "Lägg till profil",
-      `<input type="text" id="in_profile2" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile2">+ Profil</button>`, 1));
-  }
-  t.push(`</div>`);
-
+  // Grupper visas bara när stallet faktiskt delar in sig — annars räcker Profiler-fliken
   t.push(tSect(172));
   t.push(`<div class="trow lvl0" data-t="schema">${ic("calendar")} Schema ${caret("schema")}</div>`);
   if(stOpen.schema){
     if(curAdmin){
       const st = stStableRow || {};
       const basis = st.rotation_basis || "week";
+      const grupper = st.use_groups !== false;
+      const perioder = basis !== "none";
       const per = basis === "month" ? "månaden" : "veckan";
-      t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Jourrotation</span>
-        <select id="rotbasis"><option value="week"${basis==="week"?" selected":""}>Ny grupp varje vecka</option><option value="month"${basis==="month"?" selected":""}>Ny grupp varje månad</option></select></div>`);
+      t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Perioder</span>
+        <select id="rotbasis">
+          <option value="week"${basis==="week"?" selected":""}>Ny period varje vecka</option>
+          <option value="month"${basis==="month"?" selected":""}>Ny period varje månad</option>
+          <option value="none"${basis==="none"?" selected":""}>Löpande — inga perioder</option>
+        </select></div>`);
+      if(perioder) t.push(`<div class="addhorse lvl1"><span class="meta2" style="min-width:104px">Grupper</span>
+        <select id="usegroups">
+          <option value="1"${grupper?" selected":""}>Grupperna turas om</option>
+          <option value="0"${!grupper?" selected":""}>Alla bokar tillsammans</option>
+        </select></div>`);
+      if(!perioder) t.push(`<div class="tleaf lvl1 tmuted">Löpande schema: passen är öppna hela tiden — ingen deadline, ingen turordning och ingen jourgrupp.</div>`);
+      else if(!grupper) t.push(`<div class="tleaf lvl1 tmuted">Alla bokar tillsammans: ingen jourgrupp i schemat och inga måltal per grupp.</div>`);
       // Jourordning: vilka grupper som roterar, i vilken ordning, och vem som har jouren nu
       const rotG = (stData.groups||[]).filter(g=> g.in_rotation !== false);
+      if(grupper && perioder){
       const nuIdx = (function(){
         const n = rotG.length; if(!n) return -1;
         const idx = basis === "month" ? monthIndexOf(new Date()) : weekIndexOf(startOfWeek(new Date()));
@@ -1189,7 +1211,9 @@ function renderStableTree(){
           </div>`;
         }).join("") || `<div class="meta2">Inga grupper än.</div>`}
       </div>`);
-      // Deadline: alla pass tagna X dagar innan perioden börjar
+      }
+      // Deadline och fördelning hör till perioder
+      if(perioder){
       t.push(`<div class="trow lvl1 titem" data-t="deadline">${ic("clock")} Deadline <span class="meta2">${st.deadline_days != null ? st.deadline_days + " dagar innan" : "av"}</span> ${caret("deadline")}</div>`);
       if(stOpen.deadline) t.push(`<div class="addbox lvl2">
         <div class="addhead"><span>Deadline</span></div>
@@ -1211,6 +1235,7 @@ function renderStableTree(){
           ${st.release_rotation ? `<div class="addhorse" style="margin-top:8px"><span class="meta2" style="min-width:104px">Tid per häst</span>
             <select id="relHours">${[6,12,24,48,72].map(n=>`<option value="${n}"${n===(st.release_hours||24)?" selected":""}>${n} timmar</option>`).join("")}</select></div>` : ""}` : ""}
       </div>`);
+      }
     }
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
@@ -1245,6 +1270,40 @@ function renderStableTree(){
     }
   }
   t.push(`</div>`);
+
+  const harGrupper = (stStableRow || {}).use_groups !== false && (stStableRow || {}).rotation_basis !== "none";
+  if(harGrupper){
+  t.push(tSect(150));
+  t.push(`<div class="trow lvl0" data-t="grupper">${ic("users")} Grupper ${caret("grupper")}</div>`);
+  if(stOpen.grupper){
+    stData.groups.forEach(g=> t.push(groupNode(g)));
+    const loose = stData.profiles.filter(p=> !(p.horse||[]).length || (p.horse||[]).some(h=>!h.group_id));
+    if(loose.length){
+      t.push(`<div class="trow lvl1" data-t="g_none">◌ Utan grupp ${caret("g_none")}</div>`);
+      if(stOpen.g_none) loose.forEach(p=> t.push(profileNode(p, null, "none")));
+    }
+    if(curAdmin){
+      t.push(stAddCtl("add_group", "Lägg till grupp",
+        `<input type="text" id="in_group" placeholder="Gruppens namn"><button class="btn sm" data-add="group">+ Grupp</button>`, 1));
+      t.push(stAddCtl("add_profile", "Lägg till profil",
+        `<input type="text" id="in_profile" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile">+ Profil</button>`, 1));
+    }
+  }
+  t.push(`</div>`);
+  }
+
+  // Profiler som egen flik: alla profiler samlade, med hästar oavsett grupp
+  t.push(tSect(196));
+  t.push(`<div class="trow lvl0" data-t="profiler">${ic("user")} Profiler ${caret("profiler")}</div>`);
+  if(stOpen.profiler){
+    const all = stData.profiles.slice().sort((a,b)=> (a.name||"").localeCompare(b.name||"", "sv"));
+    all.forEach(pr=> t.push(profileNode(pr, "*", "all", 1)));
+    if(!all.length) t.push(`<div class="tleaf lvl1 tmuted">Inga profiler än</div>`);
+    if(curAdmin) t.push(stAddCtl("add_profile2", "Lägg till profil",
+      `<input type="text" id="in_profile2" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile2">+ Profil</button>`, 1));
+  }
+  t.push(`</div>`);
+
   host.innerHTML = t.join("");
   host.querySelectorAll("[data-t]").forEach(n=> n.onclick = ()=>{ const k=n.getAttribute("data-t"); stOpen[k]=!stOpen[k]; renderStableTree(); });
   host.querySelectorAll("[data-e]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); startEdit(b.getAttribute("data-e")); });
@@ -1254,9 +1313,17 @@ function renderStableTree(){
   host.querySelectorAll("[data-add]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); doAdd(b.getAttribute("data-add")); });
   host.querySelectorAll("[data-stshow]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); stOpen[b.getAttribute("data-stshow")] = true; renderStableTree(); });
   host.querySelectorAll("[data-sthide]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); delete stOpen[b.getAttribute("data-sthide")]; renderStableTree(); });
+  // vilken SQL-fil som saknas beror på vilken inställning som sparas
+  const FIL_FOR = { use_groups:"db/lopande.sql", deadline_days:"db/bokningsregler.sql",
+    release_days:"db/bokningsregler.sql", release_rotation:"db/bokningsregler.sql",
+    release_hours:"db/bokningsregler.sql", rotation_basis:"db/passregler.sql" };
   const saveStable = async (patch)=>{
     const r = await db.from("stable").update(patch).eq("id", stStableId);
-    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/bokningsregler.sql körts?)"); return false; }
+    if(r.error){
+      const fil = FIL_FOR[Object.keys(patch)[0]] || "rätt db-fil";
+      alert("Kunde inte spara: " + r.error.message + "\n\nKör " + fil + " i Supabase → SQL Editor först.");
+      return false;
+    }
     Object.assign(stStableRow || {}, patch);
     if(schedCtx && schedCtx.stable && schedCtx.stable.id === stStableId) Object.assign(schedCtx.stable, patch);
     renderStableTree();
@@ -1310,13 +1377,13 @@ function renderStableTree(){
   if(relRot) relRot.onchange = ()=> saveStable({ release_rotation: relRot.checked });
   const relHours = el("relHours");
   if(relHours) relHours.onchange = ()=> saveStable({ release_hours: parseInt(relHours.value,10) });
+  const ug = el("usegroups");
+  if(ug) ug.onchange = ()=> saveStable({ use_groups: ug.value === "1" });
   const rb = el("rotbasis");
-  if(rb) rb.onchange = async ()=>{
-    const r = await db.from("stable").update({ rotation_basis: rb.value }).eq("id", stStableId);
-    if(r.error){ alert("Kunde inte spara: " + r.error.message + " (har db/passregler.sql körts?)"); return; }
-    if(stStableRow) stStableRow.rotation_basis = rb.value;
-    if(schedCtx && schedCtx.stable && schedCtx.stable.id === stStableId) schedCtx.stable.rotation_basis = rb.value;
-  };
+  // via saveStable, så trädet ritas om och deadline/fördelning försvinner direkt vid löpande
+  if(rb) rb.onchange = ()=> saveStable(rb.value === "none"
+    ? { rotation_basis:"none", use_groups:false }   // utan perioder finns inget att turas om
+    : { rotation_basis: rb.value });
   host.querySelectorAll("[data-pfchange]").forEach(n=> n.onchange = (e)=>{ e.stopPropagation(); passCapture(); renderStableTree(); });
   host.querySelectorAll("[data-pfdate]").forEach(b=> b.onclick = (e)=>{
     e.stopPropagation(); passCapture();
@@ -1936,7 +2003,7 @@ function schedNotices(days, map, passes, myIds){
     }
   }
   // deadline: alla pass tagna X dagar innan perioden börjar
-  if(st.deadline_days != null){
+  if(st.deadline_days != null && harPerioder(st)){
     const ps = periodStart(d0);
     const dl = new Date(ps); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
     const kvar = [];
@@ -2022,6 +2089,8 @@ async function drawGrid(keepScroll){
   html += await taskList(tasks, days, myIds);
   if(schedPassSel) html += passPanel(schedPassSel, map, days);
   html += renderStats(tgt, myIds, days[0]);   // statistiken under schemat
+  const ordHtml = releaseOrderBlock(days[0], myIds);
+  if(ordHtml) html += `<div class="card">${ordHtml}</div>`;
   html += `<div class="card">
     <div class="trow" data-logtoggle style="padding:6px 4px">${ic("list")} Händelselogg <span class="meta2">vecka ${isoWeekNumber(weekStart2)}</span> <span class="caret" style="margin-left:auto">${schedLogOpen?"▾":"▸"}</span></div>
     <div id="logBody" style="display:${schedLogOpen?"":"none"};margin-top:6px"></div>
@@ -2298,7 +2367,7 @@ function releaseOrderBlock(d0, myIds){
       <span class="on-h">${esc(h.name)} <span class="meta2">${esc(h.profileName)}</span></span>
       ${nu?`<span class="tagpill st-pend">väljer nu</span>`:""}<span class="on-t meta2">${esc(shortWhen(nar))}</span></div>`;
   }).join("");
-  return `<div class="ordblock">
+  return `<div class="ordblock" style="margin-top:0;padding-top:0;border-top:none">
     <div class="tl-head">Fördelning — vem väljer först i ${esc(periodLabel(rel.ps))}</div>
     ${rader}
     <div class="ordline"><span class="on-n">·</span><span class="on-h">Alla i stallet</span><span class="on-t meta2">${esc(shortWhen(rel.allOpenAt))}</span></div>
@@ -2307,7 +2376,7 @@ function releaseOrderBlock(d0, myIds){
 function renderStats(tgt, myIds, d0){
   if(!tgt) return "";
   const pids = Object.keys(tgt.perProfile);
-  if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p>${releaseOrderBlock(d0, myIds)}</div>`;
+  if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p></div>`;
   const catKeys = Object.keys(tgt.cats).filter(k=> tgt.cats[k].total > 0);
   const rows = pids.map(pid=>{
     const pr = tgt.perProfile[pid];
@@ -2324,7 +2393,6 @@ function renderStats(tgt, myIds, d0){
   return `<div class="card">
     <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
     <div class="statwrap">${rows}</div>
-    ${releaseOrderBlock(d0, myIds)}
     <button class="iconbtn" id="statBtn" title="Statistik per häst">${ic("chart")}</button></div>`;
 }
 
@@ -3518,7 +3586,10 @@ function mySenderProfile(gid){
   return inv ? inv.profile_id : null;
 }
 
+/* Stall utan grupper har en enda chatt för hela stallet (group_id = null) */
+function stallChatt(){ return (chatCtx && chatCtx.stable && chatCtx.stable.use_groups === false); }
 function renderChatList(){
+  if(stallChatt()){ renderChatRoom(null); return; }   // ingen lista att välja i
   const mine = chatCtx.groups.filter(g=> amRegularIn(g.id) || amInvitedIn(g.id));
   const rows = mine.length ? mine.map(g=>`
     <button class="row" data-chat="${g.id}">
@@ -3528,6 +3599,7 @@ function renderChatList(){
       <span class="chev">›</span>
     </button>`).join("")
     : `<div class="empty">Du är inte med i någon chatt än. Chatten följer din grupp — be admin koppla din profil till en grupp via en häst, eller bli inbjuden.</div>`;
+  // (stall utan grupper går aldrig hit — de har en gemensam chatt)
   el("chatShell").innerHTML = `
     <div class="card schedtop">
       <div class="schedeyebrow">Chatt</div>
@@ -3538,15 +3610,15 @@ function renderChatList(){
 }
 
 function renderChatRoom(gid){
-  const g = chatCtx.groups.find(x=> x.id === gid);
-  if(!g){ renderChatList(); return; }
-  const canManage = amRegularIn(gid);
+  const stall = stallChatt() && !gid;
+  const g = stall ? null : chatCtx.groups.find(x=> x.id === gid);
+  if(!stall && !g){ renderChatList(); return; }
   el("chatShell").innerHTML = `
-    <button class="backlink" id="chatBack">‹ Alla chattar</button>
+    ${stall ? "" : `<button class="backlink" id="chatBack">‹ Alla chattar</button>`}
     <div class="card" style="display:flex;align-items:center;gap:10px">
-      <span class="cdot" style="background:${g.color||'#4e9e6e'}"></span>
-      <div class="grow"><b>${esc(g.name)}</b></div>
-      <button class="btn sm" id="chatMembersBtn">${ic("users")} Medlemmar</button>
+      <span class="cdot" style="background:${stall ? "#4e9e6e" : (g.color||'#4e9e6e')}"></span>
+      <div class="grow"><b>${stall ? esc(chatCtx.stable.name) : esc(g.name)}</b>${stall?` <span class="meta2">alla i stallet</span>`:""}</div>
+      ${stall ? "" : `<button class="btn sm" id="chatMembersBtn">${ic("users")} Medlemmar</button>`}
     </div>
     <div class="card" id="chatMembersCard" style="display:none"></div>
     <div class="card">
@@ -3556,8 +3628,8 @@ function renderChatRoom(gid){
         <button class="btn primary" id="msgSend">Skicka</button>
       </div>
     </div>`;
-  el("chatBack").onclick = ()=>{ view = { name:"chat", stableId: chatCtx.stable.id }; render(); };
-  el("chatMembersBtn").onclick = ()=>{ const c = el("chatMembersCard"); const show = c.style.display === "none"; c.style.display = show ? "" : "none"; if(show) renderChatMembers(gid); };
+  if(el("chatBack")) el("chatBack").onclick = ()=>{ view = { name:"chat", stableId: chatCtx.stable.id }; render(); };
+  if(el("chatMembersBtn")) el("chatMembersBtn").onclick = ()=>{ const c = el("chatMembersCard"); const show = c.style.display === "none"; c.style.display = show ? "" : "none"; if(show) renderChatMembers(gid); };
   el("msgSend").onclick = ()=> sendChatMsg(gid);
   el("msgInput").addEventListener("keydown", e=>{ if(e.key === "Enter") sendChatMsg(gid); });
   loadChatMsgs(gid, true);
@@ -3566,8 +3638,9 @@ function renderChatRoom(gid){
 
 async function loadChatMsgs(gid, first){
   const listEl = el("msgList"); if(!listEl) return;
-  const r = await db.from("chat_message").select("id,body,created_at,profile_id,profile(name)")
-    .eq("group_id", gid).order("created_at",{ascending:true}).limit(300);
+  let q = db.from("chat_message").select("id,body,created_at,profile_id,profile(name)");
+  q = gid ? q.eq("group_id", gid) : q.eq("stable_id", chatCtx.stable.id).is("group_id", null);
+  const r = await q.order("created_at",{ascending:true}).limit(300);
   if(r.error){ if(first) listEl.innerHTML = msg("Kunde inte hämta meddelanden: " + r.error.message, "err"); return; }
   const nearBottom = listEl.scrollHeight - listEl.scrollTop - listEl.clientHeight < 80;
   if(!r.data.length){ listEl.innerHTML = `<div class="empty">Inga meddelanden än — säg hej! 👋</div>`; return; }
@@ -3587,10 +3660,11 @@ async function loadChatMsgs(gid, first){
 async function sendChatMsg(gid){
   const inp = el("msgInput"); const body = (inp.value||"").trim();
   if(!body) return;
-  const sender = mySenderProfile(gid);
-  if(!sender){ alert("Du är inte medlem i den här chatten."); return; }
+  // i stallets gemensamma chatt skriver man som sin första profil
+  const sender = gid ? mySenderProfile(gid) : (chatCtx.myIds||[])[0];
+  if(!sender){ alert(gid ? "Du är inte medlem i den här chatten." : "Du behöver en profil i stallet för att skriva."); return; }
   inp.value = "";
-  const r = await db.from("chat_message").insert({ stable_id: chatCtx.stable.id, group_id: gid, profile_id: sender, body });
+  const r = await db.from("chat_message").insert({ stable_id: chatCtx.stable.id, group_id: gid || null, profile_id: sender, body });
   if(r.error){ alert("Kunde inte skicka: " + r.error.message); inp.value = body; return; }
   await loadChatMsgs(gid, true);
 }
