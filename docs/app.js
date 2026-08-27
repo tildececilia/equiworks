@@ -138,6 +138,13 @@ function releaseInfo(d){
            open: now >= mineAt.getTime(),
            freeForAll: now >= allOpenAt.getTime() };
 }
+/* Har deadline passerat för perioden som datumet ligger i? */
+function deadlinePassed(d){
+  const st = (schedCtx && schedCtx.stable) || {};
+  if(st.deadline_days == null || !harPerioder(st)) return false;
+  const dl = new Date(periodStart(d)); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
+  return Date.now() >= dl.getTime();
+}
 function shortWhen(dt){
   const idag = isoDate(new Date()), d2 = isoDate(dt);
   const t = String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
@@ -269,16 +276,40 @@ function render(){
 /* ============ Inloggning (mejl-länk) + skapa stall ============ */
 let loginMode = "login";   // "login" | "create"
 function renderLogin(){
+  // Steg 2: bara koden — mejlfältet och stallformuläret är avklarade och ska inte stå kvar
+  if(loginStage === "code"){
+    appEl.innerHTML = `
+      <div class="center">
+        <div class="card">
+          <h1 class="title">Skriv in koden</h1>
+          <p class="sub">Vi skickade en kod till <b>${esc(loginEmail)}</b>. Den gäller i en timme.</p>
+          <div id="loginMsg"></div>
+          <div class="field">
+            <input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Koden från mejlet">
+          </div>
+          <button class="btn primary block" id="codeBtn">Logga in</button>
+          <div class="loginlinks">
+            <button class="linkbtn" id="resendBtn">Skicka en ny kod</button>
+            <button class="linkbtn" id="backBtn">Byt mejladress</button>
+          </div>
+        </div>
+      </div>`;
+    el("codeBtn").onclick = doCodeLogin;
+    el("loginCode").addEventListener("keydown", e=>{ if(e.key === "Enter") doCodeLogin(); });
+    el("resendBtn").onclick = skickaNyKod;
+    el("backBtn").onclick = ()=>{ loginStage = "email"; renderLogin(); };
+    el("loginCode").focus();
+    return;
+  }
   const form = loginMode === "login" ? `
-        <p class="sub">Logga in med din mejl. Vi skickar en länk — inget lösenord behövs.</p>
+        <p class="sub">Logga in med din mejl — inget lösenord behövs.</p>
         <div id="loginMsg"></div>
         <div class="field">
           <label class="fld" for="email">Mejladress</label>
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
         <button class="btn primary block" id="loginBtn">Skicka inloggningskod</button>
-        <div class="hint">Du får en kod i mejlet som du skriver in här. Koden gäller en timme, och sedan förblir du inloggad på den här enheten.</div>
-        ${codeBox()}`
+        <div class="hint">Du får en kod i mejlet som du skriver in i nästa steg. Sedan förblir du inloggad på den här enheten.</div>`
     : `
         <p class="sub">Starta ett nytt stall eller en ridskola — du blir admin.</p>
         <div id="loginMsg"></div>
@@ -287,15 +318,15 @@ function renderLogin(){
           <input type="text" id="cName2" placeholder="t.ex. RHC" maxlength="40">
         </div>
         <div class="field">
-          <label class="fld" for="cKind2">Typ</label>
-          <select id="cKind2"><option value="stall">Stall (jour-schema)</option><option value="ridskola">Ridskola (lektioner)</option></select>
+          <label class="fld" for="cKind2">Typ av tjänst</label>
+          <select id="cKind2"><option value="stall">Jourschema</option><option value="ridskola">Ridskola</option></select>
         </div>
         <div class="field">
           <label class="fld" for="email">Din mejladress</label>
           <input type="email" id="email" placeholder="du@exempel.se" autocomplete="email">
         </div>
         <button class="btn primary block" id="loginBtn">Skapa & skicka kod</button>
-        <div class="hint">Du får en kod i mejlet. När du skrivit in den loggas du in och stallet skapas — det dyker upp under "Mina stall".</div>`;
+        <div class="hint">Du får en kod i mejlet. När du skrivit in den i nästa steg loggas du in och stallet skapas.</div>`;
   appEl.innerHTML = `
     <div class="center">
       <div class="card">
@@ -311,41 +342,25 @@ function renderLogin(){
   el("segCreate").onclick = ()=>{ loginMode = "create"; renderLogin(); };
   el("loginBtn").onclick = doLogin;
   el("email").addEventListener("keydown", e=>{ if(e.key==="Enter") doLogin(); });
-  bindCodeBox();
   (loginMode === "create" ? el("cName2") : el("email")).focus();
 }
+/* Ny kod till samma adress, utan att gå tillbaka ett steg */
+async function skickaNyKod(){
+  const b = el("resendBtn"); const lbl = b.textContent;
+  b.textContent = "…";
+  const redirect = window.location.origin + window.location.pathname;
+  const { error } = await db.auth.signInWithOtp({ email: loginEmail, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
+  b.textContent = lbl;
+  el("loginMsg").innerHTML = error
+    ? msg("Kunde inte skicka: " + error.message, "err")
+    : msg("En ny kod är skickad till " + loginEmail + ".", "ok");
+}
 
-/* Koda in dig i det här fönstret: mejlets länk loggar in webbläsaren den öppnas i,
-   vilket inte hjälper t.ex. en app sparad på iPhones hemskärm (egen lagring).
-   Här kan man i stället klistra in koden — eller hela länken — och logga in just här. */
-function codeBox(){
-  return `<div class="codebox">
-    <button class="codetoggle" id="codeToggle" type="button">Har du redan en kod? <span class="caret" id="codeCaret">▸</span></button>
-    <div id="codeWrap" style="display:${loginStage === "code" ? "block" : "none"}">
-      <p class="hint" style="margin:8px 0">Skriv in siffrorna ur mejlet. Koden gäller en timme och bara en gång — begär en ny om den hunnit gå ut.</p>
-      <div class="field"><input type="text" id="loginCode" inputmode="numeric" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="123456"></div>
-      <button class="btn primary block" id="codeBtn">Logga in</button>
-    </div>
-  </div>`;
-}
-function bindCodeBox(){
-  const t = el("codeToggle"); if(!t) return;
-  t.onclick = ()=>{
-    const w = el("codeWrap");
-    const open = w.style.display !== "none";
-    w.style.display = open ? "none" : "block";
-    loginStage = open ? "email" : "code";
-    el("codeCaret").textContent = open ? "▸" : "▾";
-    if(!open) el("loginCode").focus();
-  };
-  if(loginStage === "code") el("codeCaret").textContent = "▾";
-  el("codeBtn").onclick = doCodeLogin;
-  el("loginCode").addEventListener("keydown", e=>{ if(e.key==="Enter") doCodeLogin(); });
-}
+
 async function doCodeLogin(){
   const mEl = el("loginMsg"), btn = el("codeBtn");
   const raw = (el("loginCode").value||"").trim();
-  const email = normEmail(el("email") ? el("email").value : "");
+  const email = normEmail(loginEmail || (el("email") ? el("email").value : ""));
   if(!raw){ mEl.innerHTML = msg("Fältet är tomt — skriv in koden från mejlet här.", "err"); el("loginCode").focus(); return; }
   if(raw.includes("{{")){ mEl.innerHTML = msg("Mejlet visar {{ .Token }} som text i stället för en kod — mejlmallen i Supabase har inte sparats rätt.", "err"); return; }
   mEl.innerHTML = "";
@@ -367,7 +382,7 @@ async function doCodeLogin(){
     }
     if(!email.includes("@")){
       btn.classList.remove("spin"); btn.textContent = label;
-      mEl.innerHTML = msg("Fyll i din mejladress ovanför också — koden hör ihop med adressen.", "err");
+      mEl.innerHTML = msg("Vi tappade bort vilken adress koden gäller — tryck på \"Byt mejladress\" och börja om.", "err");
       return;
     }
     // ny användare får "signup"-kod, befintlig "magiclink" — pröva tills en tar
@@ -401,13 +416,11 @@ async function doLogin(){
   const { error } = await db.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: redirect } });
   btn.classList.remove("spin"); btn.textContent = btnLabel;
   if(error){ mEl.innerHTML = msg("Kunde inte skicka: " + error.message, "err"); return; }
-  // koden är det enda som behövs — visa fältet direkt så ingen letar efter en länk
+  // vidare till kodsteget — mejlfältet och stallformuläret ska inte stå kvar
+  loginEmail = email;
   loginStage = "code";
   renderLogin();
-  if(el("email")) el("email").value = email;
-  el("loginMsg").innerHTML = msg("Vi skickade en kod till " + email + ". Skriv in den här nedanför"
-    + (loginMode === "create" ? " så skapas stallet." : "."), "ok");
-  setTimeout(()=>{ if(el("loginCode")) el("loginCode").focus(); }, 60);
+  if(loginMode === "create") el("loginMsg").innerHTML = msg("När du skrivit in koden loggas du in och stallet skapas.", "ok");
 }
 
 async function handlePendingCreate(){
@@ -637,7 +650,7 @@ function createOrgDialog(){
   const ov = document.createElement("div"); ov.className = "modal-ov";
   ov.innerHTML = `<div class="modal"><h3>Skapa nytt stall</h3>
     <div class="field"><label class="fld">Stallets namn</label><input type="text" id="co_name" placeholder="t.ex. RHC" maxlength="40"></div>
-    <div class="field"><label class="fld">Första delen</label><select id="co_kind"><option value="stall">Jourschema</option><option value="ridskola">Ridskola</option></select></div>
+    <div class="field"><label class="fld">Typ av tjänst</label><select id="co_kind"><option value="stall">Jourschema</option><option value="ridskola">Ridskola</option></select></div>
     <div id="co_jour">
       <div class="field"><label class="fld">Hur ser schemat ut?</label>
         <select id="co_basis">
@@ -1953,7 +1966,7 @@ async function taskList(tasks, days, myIds){
     const chips = mina.map(b2=>{
       const mine = myIds.has(b2.profile_id);
       const namn = (b2.profile && b2.profile.name) || "?";
-      const kryss = (mine || curAdmin) && !passerat
+      const kryss = (mine || curAdmin) && !passerat && (curAdmin || !deadlinePassed(ps))
         ? `<button class="x2" data-cancel="${b2.id}" data-cinfo="${esc(t.name)}|${psISO}" data-cprof="${esc(namn)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(namn)}">✕</button>` : "";
       return `<span class="schip" style="${profChipStyle(b2.profile_id)}"><span class="cn">${esc(namn)}</span>${kryss}</span>`;
     }).join("");
@@ -2193,9 +2206,11 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
     const mine = myIds.has(bk.profile_id);
     const canReq = !isPast && schedCtx.actingProfileId;
     const reqAttrs = canReq ? ` data-req="${bk.id}|${bk.profile_id}|${mine?1:0}" data-pinfo="${esc(p.name)}|${dISO}"` : "";
-    const canRemove = (mine || curAdmin) && !isPast;
+    const efterDl = deadlinePassed(d) && !curAdmin;
+    const canRemove = (mine || curAdmin) && !isPast && !efterDl;
     const who = (bk.profile && bk.profile.name) || "?";
-    return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${canReq?(mine?"Ge bort passet":"Fråga om att ta över"):""}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
+    const chipTitle = canReq ? (mine ? (efterDl ? "Deadline har passerat — ge bort passet i stället för att ta bort det" : "Ge bort passet") : "Fråga om att ta över") : "";
+    return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${esc(chipTitle)}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
   }).join("");
   let emptyTxt = "–", emptyTitle = "";
   if(!mayTake){ emptyTxt = "·"; emptyTitle = "Passet är reserverat för andra grupper"; }
@@ -2269,6 +2284,15 @@ async function bookCell(passId, dISO){
 }
 async function cancelBooking(id, info, profName, mine){
   if(mine === undefined) mine = true;
+  // efter deadline får man inte lämna passet tomt — bara ge bort det
+  if(info && !curAdmin){
+    const j0 = info.lastIndexOf("|");
+    const d0 = new Date(info.slice(j0+1) + "T00:00:00");
+    if(deadlinePassed(d0)){
+      await infoDialog("Deadline för perioden har passerat, så passet går inte att ta bort. Klicka på ditt namn i schemat för att ge bort det till någon annan i stället.", "För sent att avboka");
+      return;
+    }
+  }
   let txt = mine ? "Är du säker på att du vill ta bort ditt pass?"
                  : `Vill du ta bort ${profName || "personen"} från passet?`;
   let pn = "", pd = "";
@@ -2378,17 +2402,23 @@ function renderStats(tgt, myIds, d0){
   const pids = Object.keys(tgt.perProfile);
   if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p></div>`;
   const catKeys = Object.keys(tgt.cats).filter(k=> tgt.cats[k].total > 0);
+  const efterDl = deadlinePassed(d0 || weekStart2);
   const rows = pids.map(pid=>{
     const pr = tgt.perProfile[pid];
     const mine = myIds.has(pid);
+    let saknar = 0;
     const chips = catKeys.map(k=>{
       const c = pr.byCat[k] || { name:tgt.cats[k].name, target:0, actual:0 };
       const done = c.target > 0 && c.actual >= c.target;
+      if(!done && c.target > 0) saknar += c.target - c.actual;
       const hu = (schedCtx.catTint || {})[k];
-      const ts = (!done && hu != null) ? ` style="background:hsla(${hu},45%,45%,.12)"` : "";
-      return `<span class="statcat ${done?"done":""}"${ts}>${esc(c.name)} ${c.actual}/${c.target}</span>`;
+      const ts = (!done && hu != null && !efterDl) ? ` style="background:hsla(${hu},45%,45%,.12)"` : "";
+      return `<span class="statcat ${done?"done":(efterDl?"late":"")}"${ts}>${esc(c.name)} ${c.actual}/${c.target}</span>`;
     }).join("");
-    return `<div class="statrow${mine?" me":""}"><span class="sn">${esc(pr.name)}</span>${chips}</div>`;
+    // efter deadline: markera den som fortfarande saknar pass
+    const sen = efterDl && saknar > 0;
+    return `<div class="statrow${mine?" me":""}${sen?" late":""}"><span class="sn">${esc(pr.name)}${
+      sen?` <span class="tagpill st-no">saknar ${saknar}</span>`:""}</span>${chips}</div>`;
   }).join("");
   return `<div class="card">
     <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>

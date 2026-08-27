@@ -309,6 +309,10 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .statrow.me .sn{color:var(--accent)}
 .statcat{font-size:.8rem;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--card-2);border:1px solid var(--line);font-variant-numeric:tabular-nums}
 .statcat.done{background:var(--accent-soft);color:var(--accent);border-color:transparent}
+/* Efter deadline: den som fortfarande saknar pass markeras rött */
+.statrow.late{background:rgba(192,69,59,.07);border-radius:9px;padding-left:9px;padding-right:9px}
+.statrow.late .sn{color:var(--danger)}
+.statcat.late{border-color:rgba(192,69,59,.45);color:var(--danger)}
 label.fld{display:block;font-size:.82rem;font-weight:600;color:var(--muted);margin:0 0 6px}
 .field{margin-bottom:14px}
 
@@ -338,10 +342,10 @@ h1.title{font-family:var(--font-head);font-size:1.7rem;margin:0 0 6px}
 .pill{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:999px;background:var(--accent-soft);color:var(--accent)}
 
 .empty{color:var(--muted);font-size:.92rem;padding:8px 0}
-/* Logga in i just det här fönstret med kod eller inklistrad länk */
-.codebox{margin-top:16px;padding-top:14px;border-top:1px solid var(--line)}
-.codetoggle{display:flex;align-items:center;gap:6px;width:100%;border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:.85rem;font-weight:600;padding:0;cursor:pointer}
-.codetoggle:hover{color:var(--ink)}
+/* Inloggningens andra steg: länkarna under kodfältet */
+.loginlinks{display:flex;gap:16px;justify-content:center;margin-top:14px}
+.linkbtn{border:none;background:transparent;color:var(--muted);font-family:inherit;font-size:.85rem;font-weight:600;padding:0;cursor:pointer;text-decoration:underline}
+.linkbtn:hover{color:var(--accent)}
 .msg{padding:11px 14px;border-radius:11px;font-size:.9rem;margin-bottom:14px}
 .msg.err{background:rgba(192,69,59,.12);color:var(--danger)}
 .msg.ok{background:var(--accent-soft);color:var(--accent)}
