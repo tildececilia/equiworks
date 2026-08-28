@@ -65,11 +65,31 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .profhead .x{margin-left:4px}
 /* Fördelning: turordningen med datum, under profilerna i måltalsrutan */
 .ordblock{margin-top:12px;padding-top:10px;border-top:1px solid var(--line)}
-.ordline{display:flex;align-items:center;gap:6px;padding:3px 0;font-size:.84rem}
-.ordline .on-n{width:16px;color:var(--muted);font-weight:700;flex:0 0 auto}
-.ordline .on-h{flex:1 1 auto;min-width:0}
+.ordline{display:flex;flex-wrap:wrap;align-items:flex-start;gap:2px 8px;padding:5px 0;font-size:.84rem;border-top:1px solid var(--line)}
+.ordline:first-of-type{border-top:none}
+.ordline .on-n{width:16px;color:var(--muted);font-weight:700;flex:0 0 auto;line-height:1.35}
+.ordline .on-h{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+.ordline .on-name{font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.ordline .on-when{font-size:.76rem;line-height:1.3;overflow-wrap:anywhere}
+.ordline .tagpill{flex:0 0 auto;font-size:.68rem;padding:1px 7px;align-self:center}
 .ordline .on-t{white-space:nowrap}
-.ordline.me .on-h{color:var(--accent);font-weight:700}
+.ordline.me .on-name{color:var(--accent);font-weight:700}
+.ordline.klar{opacity:.55}
+.ordline.nu{background:var(--card-2);border-radius:8px;padding-left:6px;padding-right:6px}
+.ordline.alla{border-top:1px dashed var(--line);margin-top:2px}
+.ordline.alla .on-name{color:var(--muted)}
+.msg + .ordblock{margin-top:10px;padding-top:10px}
+/* Kort klickbar rad: vem väljer just nu — öppnar hela turordningen i en popup */
+.ordnow{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;margin-top:8px;padding:8px 10px;
+  border:1px solid var(--line);background:var(--card-2);border-radius:10px;cursor:pointer;font-size:.86rem}
+.ordnow .on-name{flex:1 1 auto;min-width:0;font-weight:700;order:1}
+.ordnow .on-more{order:2;margin-left:auto;color:var(--accent);font-weight:700;white-space:nowrap;font-size:.8rem}
+.ordnow .meta2{order:3;flex:1 0 100%;font-size:.78rem}
+.ordnow:hover{border-color:var(--accent)}
+.ordmore{margin-top:6px;font-size:.78rem;font-weight:700;text-decoration:underline;opacity:.8}
+.ordnow.me{border-color:var(--accent)}
+.ordnow.me .on-name{color:var(--accent)}
+.modal .ordblock .ordline:first-of-type{border-top:none}
 /* Liten ikonknapp, t.ex. statistik nere till vänster i måltalsrutan */
 .iconbtn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin-top:10px;
   border:1px solid var(--line);background:var(--card-2);color:var(--accent);border-radius:10px;cursor:pointer}

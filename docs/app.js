@@ -150,6 +150,13 @@ function shortWhen(dt){
   const t = String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
   return (d2 === idag ? "idag" : `${dt.getDate()}/${dt.getMonth()+1}`) + (t === "00:00" ? "" : " " + t);
 }
+/* Som shortWhen men med veckodag — används där datumet står på egen rad */
+function langWhen(dt){
+  const idag = isoDate(new Date()), d2 = isoDate(dt);
+  const t = String(dt.getHours()).padStart(2,"0") + ":" + String(dt.getMinutes()).padStart(2,"0");
+  const dag = d2 === idag ? "idag" : `${SHORT_DAYS[dt.getDay()]} ${dt.getDate()}/${dt.getMonth()+1}`;
+  return dag + (t === "00:00" ? "" : " kl " + t);
+}
 function dutyGroupNow(d){
   if(!schedCtx) return null;
   const st = schedCtx.stable || {};
@@ -1919,7 +1926,7 @@ async function horseStatsDialog(group){
       const sum = rader.reduce((a,r)=> a + r.n, 0);
       html += `<div class="sublabel" style="margin-top:12px">${esc(namn)}</div>` + rader.map(r=>{
         const pct = sum > 0 ? Math.round(100 * r.n / sum) : 0;
-        return `<div class="scsrow"><span class="scsname">${esc(r.h.name)} <span class="meta2">${esc(r.h.profileName)}</span></span>
+        return `<div class="scsrow"><span class="scsname">${esc(ordNamn(r.h, horses))}</span>
           <span class="meta2">${fmt(r.n)} pass</span><span class="tagpill">${pct}%</span></div>`;
       }).join("");
     });
@@ -1998,21 +2005,21 @@ function schedNotices(days, map, passes, myIds){
   if(!rel.always){
     const ps = rel.ps;
     if(!rel.started){
-      out += `<div class="card"><div class="msg warn" style="margin:0">🔒 Passen för ${esc(periodLabel(ps))} öppnar <b>${esc(shortWhen(rel.openAt))}</b>.${
-        curAdmin ? `<div class="meta2" style="margin-top:5px">Du som admin kan boka redan nu — för alla andra är rutorna låsta.</div>` : ""}</div></div>`;
+      out += `<div class="card"><div class="msg warn" style="margin:0${rel.order.length?";cursor:pointer":""}"${
+        rel.order.length ? ` data-ordinfo="${isoDate(d0)}" title="Visa hela turordningen"` : ""}>🔒 Passen för ${esc(periodLabel(ps))} öppnar <b>${esc(langWhen(rel.openAt))}</b>.${
+        curAdmin ? `<div class="meta2" style="margin-top:5px">Du som admin kan boka redan nu — för alla andra är rutorna låsta.</div>` : ""}${
+        rel.order.length ? `<div class="ordmore">Hela turordningen ›</div>` : ""}</div></div>`;
     } else if(rel.order.length && !rel.freeForAll){
       const nu = rel.order[Math.min(rel.turnIdx, rel.order.length-1)];
-      const nuText = nu ? `${nu.name} (${nu.profileName})` : "";
-      const koll = rel.order.map((h,i)=> `${i === rel.turnIdx ? "▶ " : ""}${esc(h.name)}`).join(" · ");
+      const nuText = nu ? ordNamn(nu, rel.order) : "";
       const nextAt = new Date(rel.openAt.getTime() + (rel.turnIdx+1)*rel.hours*3600000);
       let txt, cls;
-      if(rel.myIdx >= 0 && rel.turnIdx === rel.myIdx){ cls = "ok"; txt = `✅ Det är din tur att välja pass — du har förtur till ${esc(shortWhen(nextAt))}`; }
+      if(rel.myIdx >= 0 && rel.turnIdx === rel.myIdx){ cls = "ok"; txt = `✅ Det är din tur att välja pass — du har förtur till ${esc(langWhen(nextAt))}`; }
       else if(rel.open){ cls = "ok"; txt = `✅ Du kan boka. Just nu har <b>${esc(nuText)}</b> förtur.`; }
-      else { cls = "warn"; txt = `⏳ <b>${esc(nuText)}</b> väljer just nu — din tur ${esc(shortWhen(rel.mineAt))}`; }
+      else { cls = "warn"; txt = `⏳ <b>${esc(nuText)}</b> väljer just nu — din tur ${esc(langWhen(rel.mineAt))}`; }
       if(curAdmin && !rel.open) txt += `<div class="meta2" style="margin-top:5px">Du som admin kan boka redan nu, oavsett tur.</div>`;
-      out += `<div class="card"><div class="msg ${cls}" style="margin:0">${txt}
-        <div class="meta2" style="margin-top:6px">Ordning: ${koll}</div>
-        <div class="meta2">Öppet för alla ${esc(shortWhen(rel.allOpenAt))}</div></div></div>`;
+      out += `<div class="card"><div class="msg ${cls}" style="margin:0;cursor:pointer" data-ordinfo="${isoDate(d0)}" title="Visa hela turordningen">${txt}
+        <div class="ordmore">Hela turordningen ›</div></div></div>`;
     }
   }
   // deadline: alla pass tagna X dagar innan perioden börjar
@@ -2064,13 +2071,26 @@ async function drawGrid(keepScroll){
   // Måltal per profil (viktat efter hästar) + faktiskt bokade denna vecka
   const tgt = computeTargets(weekStart2);
   if(tgt){
-    const passCat = {}; passes.forEach(p=> passCat[p.id] = p.category_id || "none");
-    (b.data||[]).forEach(bk=>{
+    // alla pass, även uppgifter — annars hamnar uppgiftsbokningar i "Övrigt"
+    const passCat = {}; (schedCtx.passes||[]).forEach(p=> passCat[p.id] = p.category_id || "none");
+    const raknade = new Set();
+    const rakna = bk=>{
+      if(raknade.has(bk.id)) return; raknade.add(bk.id);
       const prof = tgt.perProfile[bk.profile_id]; if(!prof) return;
       const key = passCat[bk.pass_id] || "none";
       if(!prof.byCat[key]) prof.byCat[key] = { name:(tgt.cats[key]?tgt.cats[key].name:"Övrigt"), target:0, actual:0 };
       prof.byCat[key].actual++;
-    });
+    };
+    (b.data||[]).forEach(rakna);
+    // uppgifter bokas på periodens första dag — den ligger utanför veckan när perioden är en månad
+    if(tasks.length){
+      const psISO = isoDate(periodStart(days[0]));
+      if(psISO < startISO || psISO > endISO){
+        const tb = await db.from("booking").select("id,pass_id,profile_id")
+          .eq("stable_id", schedCtx.stable.id).eq("pass_date", psISO).in("pass_id", tasks.map(t=> t.id));
+        if(!tb.error) (tb.data||[]).forEach(rakna);
+      }
+    }
   }
 
   schedCtx.catTint = buildCatTints(passes);
@@ -2118,6 +2138,7 @@ async function drawGrid(keepScroll){
     const t = (schedCtx.passes||[]).find(x=> x.id === b2.getAttribute("data-taskinfo"));
     if(t) taskInfoDialog(t);
   });
+  host.querySelectorAll("[data-ordinfo]").forEach(n=> n.onclick = ()=> ordDialog(n.getAttribute("data-ordinfo")));
   host.querySelectorAll("[data-booktask]").forEach(b2=> b2.onclick = ()=>{
     const [tid, dISO] = b2.getAttribute("data-booktask").split("|");
     bookCell(tid, dISO);
@@ -2379,22 +2400,75 @@ function computeTargets(monday){
   return { duty, perProfile, cats };
 }
 
-/* Vem får välja först, och från när — visas under profilerna när fördelning är på */
+/* Namn att visa i turordningen: personens namn i första hand, hästens bara
+   som förtydligande när den har ett eget namn eller när personen har flera hästar. */
+function ordNamn(h, order){
+  const pn = (h.profileName || "").trim() || "Okänd";
+  const hn = (h.name || "").trim();
+  const egetNamn = hn && hn.toLowerCase() !== "häst" && hn.toLowerCase() !== pn.toLowerCase();
+  if(egetNamn) return pn + " (" + hn + ")";
+  const syskon = (order || []).filter(x=> x.profileId === h.profileId);
+  if(syskon.length > 1) return pn + " (häst " + (syskon.indexOf(h) + 1) + ")";
+  return pn;
+}
+/* Turordningen som en läsbar lista: namn, från vilket datum, och vems tur det är nu.
+   Används både i rutan högst upp i schemat och under profilerna. */
+function ordRader(rel, myIds){
+  myIds = myIds || new Set();
+  const rader = rel.order.map((h,i)=>{
+    const nar = new Date(rel.openAt.getTime() + i*rel.hours*3600000);
+    const min = myIds.has(h.profileId);
+    const nu = rel.started && i === rel.turnIdx;
+    const klar = rel.started && i < rel.turnIdx;
+    const nartext = klar ? "kan boka sedan " + langWhen(nar)
+                         : (nu ? "har förtur sedan " + langWhen(nar) : "får boka från " + langWhen(nar));
+    return `<div class="ordline${min?" me":""}${klar?" klar":""}${nu?" nu":""}"><span class="on-n">${i+1}.</span>
+      <span class="on-h"><span class="on-name">${esc(ordNamn(h, rel.order))}</span>
+        <span class="on-when meta2">${esc(nartext)}</span></span>
+      ${nu?`<span class="tagpill st-pend">väljer nu</span>`:""}</div>`;
+  }).join("");
+  return rader + `<div class="ordline alla${rel.freeForAll?" klar":""}"><span class="on-n">·</span>
+      <span class="on-h"><span class="on-name">Alla i stallet</span>
+        <span class="on-when meta2">${rel.freeForAll ? "öppet sedan " : "öppnar "}${esc(langWhen(rel.allOpenAt))}</span></span></div>`;
+}
+/* Hela turordningen i en popup — raden i schemat hålls kort och öppnar den här */
+function ordDialog(dISO){
+  const d0 = new Date(dISO + "T00:00:00");
+  const rel = releaseInfo(d0);
+  if(rel.always || !rel.order.length) return;
+  const myIds = new Set((schedCtx.myProfiles||[]).map(p=> p.id));
+  const ov = document.createElement("div"); ov.className = "modal-ov";
+  ov.innerHTML = `<div class="modal"><h3>Turordning · ${esc(periodLabel(rel.ps))}</h3>
+    <p class="meta2" style="margin:0 0 8px">Var och en får förtur i ${rel.hours} timmar. När turen har passerat kan man fortsätta boka.</p>
+    <div class="ordblock" style="margin-top:0;padding-top:0;border-top:none;max-height:60vh;overflow-y:auto;overflow-x:hidden">${ordRader(rel, myIds)}</div>
+    <div class="modal-btns"><button class="btn primary" id="ordClose">Stäng</button></div></div>`;
+  document.body.appendChild(ov);
+  ov.querySelector("#ordClose").onclick = ()=> ov.remove();
+  ov.onclick = (e)=>{ if(e.target === ov) ov.remove(); };
+}
+/* Kort sammanfattning av turordningen: vem väljer just nu. Klick öppnar hela listan. */
+function ordKort(d0){
+  const rel = releaseInfo(d0);
+  if(rel.always || !rel.order.length || !rel.started || rel.freeForAll) return "";
+  const nu = rel.order[Math.min(rel.turnIdx, rel.order.length-1)];
+  const min = rel.myIdx >= 0 && rel.turnIdx === rel.myIdx;
+  return `<div class="ordnow${min?" me":""}" data-ordinfo="${isoDate(d0)}" title="Visa hela turordningen">
+    <span class="on-name">${min ? "Din tur att välja" : esc(ordNamn(nu, rel.order)) + " väljer nu"}</span>
+    <span class="meta2">${rel.open ? "öppet för alla " + esc(langWhen(rel.allOpenAt)) : "din tur " + esc(langWhen(rel.mineAt))}</span>
+    <span class="on-more">Ordning ›</span></div>`;
+}
+/* Vem får välja först — kort rad under profilerna när fördelning är på */
 function releaseOrderBlock(d0, myIds){
   if(!d0) return "";
   const rel = releaseInfo(d0);
   if(rel.always || !rel.order.length) return "";
-  const rader = rel.order.map((h,i)=>{
-    const nar = new Date(rel.openAt.getTime() + i*rel.hours*3600000);
-    const min = myIds.has(h.profileId), nu = rel.started && i === rel.turnIdx;
-    return `<div class="ordline${min?" me":""}"><span class="on-n">${i+1}.</span>
-      <span class="on-h">${esc(h.name)} <span class="meta2">${esc(h.profileName)}</span></span>
-      ${nu?`<span class="tagpill st-pend">väljer nu</span>`:""}<span class="on-t meta2">${esc(shortWhen(nar))}</span></div>`;
-  }).join("");
+  const kort = ordKort(d0);
   return `<div class="ordblock" style="margin-top:0;padding-top:0;border-top:none">
-    <div class="tl-head">Fördelning — vem väljer först i ${esc(periodLabel(rel.ps))}</div>
-    ${rader}
-    <div class="ordline"><span class="on-n">·</span><span class="on-h">Alla i stallet</span><span class="on-t meta2">${esc(shortWhen(rel.allOpenAt))}</span></div>
+    <div class="tl-head">Fördelning — ${esc(periodLabel(rel.ps))}</div>
+    ${kort || `<div class="ordnow" data-ordinfo="${isoDate(d0)}" title="Visa hela turordningen">
+      <span class="on-name">${rel.freeForAll ? "Öppet för alla" : "Öppnar " + esc(langWhen(rel.openAt))}</span>
+      <span class="meta2">${rel.freeForAll ? "alla i stallet kan boka" : "turordning gäller de första " + rel.order.length + " dygnen"}</span>
+      <span class="on-more">Ordning ›</span></div>`}
   </div>`;
 }
 function renderStats(tgt, myIds, d0){
