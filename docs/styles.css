@@ -509,3 +509,9 @@ select.schorse{width:auto;min-width:130px;padding:7px 10px;font-size:.9rem}
   .sbook{font-size:.85rem;padding:2px 0;border-radius:6px}
   .sempty{font-size:.6rem}
 }
+
+/* Profilsidan: statistikbrickor */
+.profstats{display:flex;gap:8px;margin:4px 0 12px}
+.profstat{flex:1;background:var(--card-2);border-radius:10px;padding:10px 8px;text-align:center;display:flex;flex-direction:column;gap:2px}
+.profstat b{font-size:1.4rem;line-height:1.1;color:var(--accent)}
+.profstat span{font-size:.72rem;color:var(--muted);font-weight:600}

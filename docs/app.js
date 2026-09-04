@@ -310,6 +310,7 @@ function render(){
   if(view.name === "mine" && view.stableId){ renderMyPasses(view.stableId); return; }
   if(view.name === "requests" && view.stableId){ renderRequests(view.stableId); return; }
   if(view.name === "stable" && view.stableId){ renderStable(view.stableId); return; }
+  if(view.name === "profile" && view.stableId && view.profileId){ renderStable(view.stableId, view.profileId); return; }
   renderHome();
 }
 
@@ -634,8 +635,8 @@ async function loadMyStables(){
     (adm.data||[]).forEach(r=>{
       const o = r.org; if(!o) return;
       const units = o.stable || [];
-      units.forEach(u=> map.set(u.id, { id:u.id, name:u.name, kind:u.kind||"stall", orgId:o.id, orgName:o.name, isAdmin:true }));
-      if(!units.length) map.set("org-"+o.id, { id:null, emptyOrg:true, name:o.name, kind:"stall", orgId:o.id, orgName:o.name, isAdmin:true });
+      units.forEach(u=> map.set(u.id, { id:u.id, name:u.name, kind:u.kind||"stall", orgId:o.id, orgName:o.name, isAdmin:true, canEdit:true }));
+      if(!units.length) map.set("org-"+o.id, { id:null, emptyOrg:true, name:o.name, kind:"stall", orgId:o.id, orgName:o.name, isAdmin:true, canEdit:true });
     });
     // profilmedlemskap där jag avböjt inbjudan visas inte (kan ångras i Mina förfrågningar)
     let declined = new Set();
@@ -645,43 +646,55 @@ async function loadMyStables(){
     if(!mem.error) (mem.data||[]).forEach(r=>{
       const s = r.profile && r.profile.stable; if(!s || map.has(s.id)) return;
       if(r.profile && declined.has(r.profile.id)) return;
-      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false });
+      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false, canEdit:false });
     });
     const sm = await db.from("rs_student_member").select("rs_student(stable(id,name,kind,org_id,org(name)))").eq("email", session.email);
     if(!sm.error) (sm.data||[]).forEach(r=>{
       const s = r.rs_student && r.rs_student.stable; if(!s || map.has(s.id)) return;
-      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false });
+      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false, canEdit:false });
     });
-    const fm = await db.from("rs_staff_member").select("rs_staff(stable(id,name,kind,org_id,org(name)))").eq("email", session.email);
+    // personal med ridlärar- eller chefsbehörighet får ändra i ridskolans inställningar
+    const fm = await db.from("rs_staff_member").select("rs_staff(perm,stable(id,name,kind,org_id,org(name)))").eq("email", session.email);
     if(!fm.error) (fm.data||[]).forEach(r=>{
-      const s = r.rs_staff && r.rs_staff.stable; if(!s || map.has(s.id)) return;
-      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false });
+      const s = r.rs_staff && r.rs_staff.stable; if(!s) return;
+      const edit = ["teacher","chef"].includes(r.rs_staff.perm || "none");
+      if(map.has(s.id)){ if(edit) map.get(s.id).canEdit = true; return; }
+      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false, canEdit:edit });
     });
     const im = await db.from("rs_instructor_member").select("rs_instructor(stable(id,name,kind,org_id,org(name)))").eq("email", session.email);
     if(!im.error) (im.data||[]).forEach(r=>{
       const s = r.rs_instructor && r.rs_instructor.stable; if(!s || map.has(s.id)) return;
-      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false });
+      map.set(s.id, { id:s.id, name:s.name, kind:s.kind||"stall", orgId:s.org_id, orgName:(s.org&&s.org.name)||s.name, isAdmin:false, canEdit:false });
     });
     const units = [...map.values()];
     iAmAdminSomewhere = units.some(u=> u.isAdmin);   // håll "Visa som"-behörigheten aktuell (räknas på de riktiga rollerna)
-    return applyPermView(units);
+    return noteEditRights(applyPermView(units));
   }
   // Fallback (om db/org.sql inte körts än): gamla platta modellen
   const admin = await db.from("stable_admin").select("stable(*)").eq("email", session.email);
   if(admin.error) throw admin.error;
-  admin.data.forEach(r=>{ if(r.stable) map.set(r.stable.id, { ...r.stable, orgId:r.stable.id, orgName:r.stable.name, isAdmin:true }); });
+  admin.data.forEach(r=>{ if(r.stable) map.set(r.stable.id, { ...r.stable, orgId:r.stable.id, orgName:r.stable.name, isAdmin:true, canEdit:true }); });
   const mem = await db.from("profile_member").select("profile(stable(*))").eq("email", session.email);
   if(!mem.error) mem.data.forEach(r=>{ const s=r.profile && r.profile.stable; if(s && !map.has(s.id)) map.set(s.id, { ...s, orgId:s.id, orgName:s.name, isAdmin:false }); });
   const sm = await db.from("rs_student_member").select("rs_student(stable(*))").eq("email", session.email);
-  if(!sm.error) (sm.data||[]).forEach(r=>{ const s=r.rs_student && r.rs_student.stable; if(s && !map.has(s.id)) map.set(s.id, { ...s, orgId:s.id, orgName:s.name, isAdmin:false }); });
-  return applyPermView([...map.values()]);
+  if(!sm.error) (sm.data||[]).forEach(r=>{ const s=r.rs_student && r.rs_student.stable; if(s && !map.has(s.id)) map.set(s.id, { ...s, orgId:s.id, orgName:s.name, isAdmin:false, canEdit:false }); });
+  return noteEditRights(applyPermView([...map.values()]));
 }
 /* "Visa som" styr även vilka stall som syns: i förhandsgranskning är man aldrig admin,
-   och som jourmedlem finns ridskolans delar inte med alls. */
+   och som jourmedlem finns ridskolans delar inte med alls. Ridlärare/chef får
+   fortfarande ändra i ridskolans inställningar. */
 function applyPermView(units){
   if(!permView) return units;
-  const out = units.map(u=> ({ ...u, isAdmin:false }));
+  const out = units.map(u=> ({ ...u, isAdmin:false, canEdit: (permView === "teacher" || permView === "chef") && u.kind === "ridskola" }));
   return permView === "jour" ? out.filter(u=> u.kind !== "ridskola") : out;
+}
+/* Inställningar-knappen finns bara för den som får ändra något någonstans
+   (admin, ridlärare eller chef) — medlemmar når sitt stall via Profil → Mina stall. */
+let iCanEditSomewhere = false;
+function noteEditRights(units){
+  iCanEditSomewhere = units.some(u=> u.canEdit);
+  updateHeader();
+  return units;
 }
 function unitLabel(u){ return u.orgName && u.orgName !== u.name ? `${u.orgName} · ${u.name}` : u.name; }
 function kindLabel(k){ return k === "ridskola" ? "Ridskola" : "Jourschema"; }
@@ -742,16 +755,19 @@ function createOrgDialog(){
 }
 
 /* ============ Stall-vy – profiler ============ */
-async function renderStable(stableId){
+async function renderStable(stableId, profileId){
   const kindQ = await db.from("stable").select("kind").eq("id", stableId).single();
-  if(!kindQ.error && kindQ.data && kindQ.data.kind === "ridskola"){ renderSchool(stableId); return; }
+  if(!profileId && !kindQ.error && kindQ.data && kindQ.data.kind === "ridskola"){ renderSchool(stableId); return; }
   editingPassId = editingHorseId = editingGroupId = editingCatId = editingProfileId = null;
   stOpen = {};
+  stOnlyProfile = profileId || null;   // profilsidan: bara den egna profilen, inget schema/grupper
+  if(profileId){ focusProfileId = profileId; }
   stStableId = stableId;
   appEl.innerHTML = `
     <button class="backlink" id="back">‹ Mina stall</button>
     <div class="card schedtop"><div id="stableHead"><h1 class="title">Laddar…</h1></div></div>
-    <div class="card" id="stTreeCard"><div class="empty">Laddar…</div></div>`;
+    <div class="card" id="stTreeCard"><div class="empty">Laddar…</div></div>
+    ${profileId ? `<div class="card" id="profExtra"><div class="empty">Laddar…</div></div>` : ""}`;
   el("back").onclick = ()=>{ view={name:"home",stableId:null}; render(); };
 
   try{
@@ -761,14 +777,54 @@ async function renderStable(stableId){
     stStableRow = st.data;
     curAdmin = await amIAdmin(stableId);
     el("stableHead").innerHTML = `
-      <div class="schedeyebrow">Inställningar</div>
+      <div class="schedeyebrow">${profileId ? "Min profil" : curAdmin ? "Inställningar" : "Mitt stall"}</div>
       <h1 class="schedname" style="margin-bottom:6px">${esc(st.data.name)}</h1>
-      <p class="sub" style="margin:0">${curAdmin ? '<span class="pill">Admin</span>' : '<span class="muted">Medlem</span>'}</p>`;
+      <p class="sub" style="margin:0">${profileId ? "Namn, mejladresser och hästar" : curAdmin ? '<span class="pill">Admin</span>' : '<span class="muted">Medlem</span>'}</p>
+      ${curAdmin && !profileId ? `<button class="btn sm" id="stInvite" style="margin-top:12px">${ic("mail")} Bjud in till stallet</button>` : ""}`;
+    if(el("stInvite")) el("stInvite").onclick = ()=> inviteDialog(stableId);
     await reloadStableData();
-    renderUnitDanger("stTreeCard", stableId, st.data.name);
+    if(profileId) renderProfileExtra(profileId);
+    else renderUnitDanger("stTreeCard", stableId, st.data.name);
   }catch(e){
     el("stableHead").innerHTML = msg("Kunde inte öppna stallet: " + (e.message||e), "err");
   }
+}
+
+/* Profilsidan: statistik över profilens pass + genväg till kalendersynk */
+async function renderProfileExtra(pid){
+  const host = el("profExtra"); if(!host) return;
+  const b = await db.from("booking").select("pass_date,pass_def(category_id)").eq("profile_id", pid);
+  if(b.error){ host.innerHTML = msg("Kunde inte hämta statistik: " + b.error.message, "err"); return; }
+  const rows = b.data || [];
+  const today = isoDate(new Date()), year = today.slice(0, 4);
+  const tot = rows.length;
+  const kommande = rows.filter(r=> (r.pass_date||"") >= today).length;
+  const iAr = rows.filter(r=> (r.pass_date||"").startsWith(year)).length;
+  const counts = {};
+  rows.forEach(r=>{ const k = (r.pass_def && r.pass_def.category_id) || "none"; counts[k] = (counts[k]||0) + 1; });
+  const cats = (stData && stData.cats) || [];
+  const order = [...cats.map(c=> c.id), "none"].filter(k=> counts[k]);
+  const max = Math.max(1, ...order.map(k=> counts[k]));
+  const kat = order.map(k=>{
+    const name = k === "none" ? "Utan kategori" : ((cats.find(c=> c.id === k)||{}).name || "Övrigt");
+    return `<div class="statline"><div class="statmeta"><b>${esc(name)}</b><span class="meta2">${counts[k]} st</span></div>
+      <div class="statbar"><div style="width:${Math.round(100 * counts[k] / max)}%"></div></div></div>`;
+  }).join("");
+  host.innerHTML = `<div class="sublabel" style="margin-top:0">${ic("chart")} Statistik</div>
+    <div class="profstats">
+      <div class="profstat"><b>${tot}</b><span>pass totalt</span></div>
+      <div class="profstat"><b>${iAr}</b><span>i år</span></div>
+      <div class="profstat"><b>${kommande}</b><span>kommande</span></div>
+    </div>
+    ${kat || `<div class="empty">Inga bokade pass än.</div>`}
+    <div class="sublabel" style="margin-top:18px">${ic("calendar")} Kalender</div>
+    <p class="meta2" style="margin:0 0 8px">Få dina pass direkt i mobilens kalender.</p>
+    <button class="btn sm" id="profCal">${ic("calendar")} Synka till kalender</button>
+    <div class="sublabel" style="margin-top:18px">${ic("user")} Inloggning</div>
+    <p class="meta2" style="margin:0 0 8px">Du loggar in med <b>${esc(session.email)}</b>. Byter du adress flyttas alla dina profiler och roller med.</p>
+    <button class="btn sm" id="profMail">${ic("pencil")} Byt mejladress</button>`;
+  el("profCal").onclick = ()=> calendarDialog();
+  el("profMail").onclick = ()=> changeEmailDialog();
 }
 
 let curPerm = "member";   // roll i ridskolan som visas: admin | teacher | chef | member
@@ -779,6 +835,7 @@ async function refreshAdminFlag(){
   const r = await db.from("org_admin").select("org_id").eq("email", session.email).limit(1);
   iAmAdminSomewhere = !r.error && (r.data||[]).length > 0;
   if(!iAmAdminSomewhere && permView){ permView = null; renderViewAsBar(); }
+  if(iAmAdminSomewhere && !permView && !iCanEditSomewhere){ iCanEditSomewhere = true; updateHeader(); }
   return iAmAdminSomewhere;
 }
 async function mySchoolPerm(stableId){
@@ -914,6 +971,7 @@ let stStableRow = null;   // stallets rad (för inställningar som rotationsbas)
 let curOrgId = null;    // stallets (organisationens) id för aktuell del
 let stData = null;      // {groups, cats, passes, profiles}
 let focusProfileId = null;  // profil att öppna direkt (från Profil-menyn)
+let stOnlyProfile = null;   // profilsidan: visa bara den här profilen
 
 async function reloadStableData(){
   const sid = stStableId;
@@ -940,16 +998,15 @@ async function reloadStableData(){
   stData = { groups: g.data, cats: c.data, passes: sortPassesByTime(p.data), profiles: pr.data,
              passDates, passGroups,
              admins: ad.error ? [] : (ad.data||[]).map(x=> (x.email||"").toLowerCase()) };
-  if(focusProfileId){
-    const fp = stData.profiles.find(x=> x.id === focusProfileId);
-    if(fp){
-      stOpen.grupper = true;
-      (fp.horse||[]).forEach(h=>{ if(h.group_id){ stOpen["g_"+h.group_id] = true; stOpen[`p_${h.group_id}_${fp.id}`] = true; } });
-      if(!(fp.horse||[]).length || (fp.horse||[]).some(h=> !h.group_id)){ stOpen.g_none = true; stOpen[`p_none_${fp.id}`] = true; }
-    }
-    focusProfileId = null;
-  }
+  // Profil vald i Profil-menyn: öppna den under Profiler-fliken (finns oavsett grupper)
+  const fp = focusProfileId ? stData.profiles.find(x=> x.id === focusProfileId) : null;
+  focusProfileId = null;
+  if(fp){ stOpen.profiler = true; stOpen[`p_all_${fp.id}`] = true; }
   renderStableTree();
+  if(fp && !stOnlyProfile){
+    const n = document.querySelector(`#stTreeCard [data-t="p_all_${fp.id}"]`);
+    if(n && n.scrollIntoView) n.scrollIntoView({ block:"center", behavior:"smooth" });
+  }
 }
 
 function caret(k){ return `<span class="caret">${stOpen[k]?"▾":"▸"}</span>`; }
@@ -1217,6 +1274,13 @@ function catRow(c, lvl){
 function renderStableTree(){
   const host = el("stTreeCard"); if(!host || !stData) return;
   const t = [];
+  if(stOnlyProfile){
+    const p = stData.profiles.find(x=> x.id === stOnlyProfile);
+    t.push(tSect(196));
+    if(p) t.push(profileNode(p, "*", "all", 1));
+    else t.push(`<div class="tleaf lvl1 tmuted">Profilen finns inte längre.</div>`);
+    t.push(`</div>`);
+  } else {
   // Grupper visas bara när stallet faktiskt delar in sig — annars räcker Profiler-fliken
   t.push(tSect(172));
   t.push(`<div class="trow lvl0" data-t="schema">${ic("calendar")} Schema ${caret("schema")}</div>`);
@@ -1356,6 +1420,7 @@ function renderStableTree(){
       `<input type="text" id="in_profile2" placeholder="t.ex. Familjen Ek"><button class="btn sm" data-add="profile2">+ Profil</button>`, 1));
   }
   t.push(`</div>`);
+  }
 
   host.innerHTML = t.join("");
   host.querySelectorAll("[data-t]").forEach(n=> n.onclick = ()=>{ const k=n.getAttribute("data-t"); stOpen[k]=!stOpen[k]; renderStableTree(); });
@@ -2571,16 +2636,21 @@ applyTheme(theme);
 el("btnTheme").onclick = ()=>{ theme = theme==="dark"?"light":"dark"; try{ localStorage.setItem("stalljour.theme", theme); }catch(e){} applyTheme(theme); };
 
 function updateHeader(){
-  ["btnProfile","btnSchedule","btnSettings","btnBell","btnChat","btnMine","btnBurger"].forEach(id=>{
+  ["btnProfile","btnSchedule","btnBell","btnChat","btnMine","btnBurger"].forEach(id=>{
     const b = el(id); if(b) b.style.display = session ? "" : "none";
   });
+  const s = el("btnSettings"); if(s) s.style.display = session && iCanEditSomewhere ? "" : "none";
 }
 
 function closeMenus(){ ["profileMenu","scheduleMenu","settingsMenu","chatMenu","mineMenu","bellMenu","burgerMenu"].forEach(id=>{ const m=el(id); if(m) m.classList.remove("open"); }); }
 function closeProfileMenu(){ closeMenus(); }
 
 let pmState = null;   // utfällnings-läge för profil-menyn
-function resetPmState(){ pmState = { stablesOpen:false, stables:null, openStableId:null, profilesOpen:false, myProfiles:null }; }
+function resetPmState(){ pmState = { stablesOpen:false, stables:null, profilesOpen:false, openStableId:null }; }
+/* Hämta profilerna på nytt när menyn öppnas, så nya namn och stall syns direkt */
+function pmRefresh(menuId){
+  refreshMyProfiles().then(()=>{ const m = el(menuId); if(m && m.classList.contains("open")) buildProfileMenu(); });
+}
 
 let pmTargetId = "profileMenu";   // var profil-menyn ritas (egen dropdown eller inuti hamburgaren)
 function buildProfileMenu(){
@@ -2591,33 +2661,44 @@ function buildProfileMenu(){
     bookAs = `<div class="menuhead sub">Bokar som</div>` + schedCtx.myProfiles.map(p=>
       `<button class="menuitem" data-bookas="${p.id}">${p.id===schedCtx.actingProfileId?"✓ ":""}${esc(p.name)}</button>`).join("");
   }
-  // Mina stall (nivå 1) -> stall (nivå 2) -> Mina profiler (nivå 3) -> profilnamn
+  // Min profil (en profil → direkt dit) / Mina profiler -> stall -> profilnamn
+  const profs = myProfileList;
+  const pgoto = p=> `data-pmgoto="${p.id}" data-pmsid="${p.stable_id}"`;
+  let prof = "";
+  if(profs === null) prof = `<div class="menuhead sub">Laddar…</div>`;
+  else if(profs.length === 1) prof = `<button class="menuitem" ${pgoto(profs[0])}>${ic("user")} Min profil <span class="caret">›</span></button>`;
+  else if(profs.length > 1){
+    prof = `<button class="menuitem" data-pm="profiles">${ic("users")} Mina profiler <span class="caret">${pmState.profilesOpen?"▾":"▸"}</span></button>`;
+    if(pmState.profilesOpen){
+      // ett stall i taget; har man bara profiler i ett stall är det redan utfällt
+      const stalls = [];
+      profs.forEach(p=>{ if(!stalls.some(s=> s.id === p.stable_id)) stalls.push({ id:p.stable_id, label:p.stableLabel }); });
+      stalls.forEach(s=>{
+        const open = stalls.length === 1 || pmState.openStableId === s.id;
+        prof += `<button class="menuitem sub1" data-pmstable="${s.id}">${esc(s.label)} <span class="caret">${open?"▾":"▸"}</span></button>`;
+        if(open) profs.filter(p=> p.stable_id === s.id).forEach(p=>
+          prof += `<button class="menuitem sub2" ${pgoto(p)}>${ic("user")} ${esc(p.name)} <span class="caret">›</span></button>`);
+      });
+    }
+  }
+  // Mina stall -> stallen man är med i + Skapa nytt stall
   let tree = `<button class="menuitem" data-pm="stables">${ic("home")} Mina stall <span class="caret">${pmState.stablesOpen?"▾":"▸"}</span></button>`;
   if(pmState.stablesOpen){
     if(!pmState.stables) tree += `<div class="menuhead sub">Laddar…</div>`;
-    else if(!pmState.stables.length) tree += `<div class="menuhead sub">Inga stall än</div>`;
+    else if(!pmState.stables.length) tree += `<div class="pmleaf muted">Inga stall än</div>`;
     else pmState.stables.forEach(s=>{
-      const open = pmState.openStableId === s.id;
-      tree += `<button class="menuitem sub1" data-pmstable="${s.id}">${esc(unitLabel(s))} <span class="caret">${open?"▾":"▸"}</span></button>`;
-      if(open){
-        tree += `<button class="menuitem sub2" data-pm="profiles">${ic("users")} Mina profiler <span class="caret">${pmState.profilesOpen?"▾":"▸"}</span></button>`;
-        if(pmState.profilesOpen){
-          if(!pmState.myProfiles) tree += `<div class="menuhead sub">Laddar…</div>`;
-          else if(!pmState.myProfiles.length) tree += `<div class="pmleaf muted">Inga profiler kopplade till din mejl</div>`;
-          else pmState.myProfiles.forEach(p=> tree += `<button class="menuitem" style="padding-left:48px" data-pmgoto="${p.id}">${esc(p.name)} <span class="caret">›</span></button>`);
-        }
-      }
+      tree += `<button class="menuitem sub1" data-pmopen="${s.id}">${esc(unitLabel(s))} <span class="caret">›</span></button>`;
     });
+    tree += `<button class="menuitem sub1" data-act="newstable">${ic("plus")} Skapa nytt stall</button>`;
   }
   m.innerHTML = `
     <div class="menuhead">${esc(session.email)}</div>
     ${bookAs}
-    <button class="menuitem" data-act="requests">${ic("swap")} Mina förfrågningar</button>
+    ${prof}
     ${tree}
-    <button class="menuitem" data-act="newstable">${ic("plus")} Nytt stall</button>
-    <button class="menuitem" data-act="invite">${ic("mail")} Bjud in till stallet</button>
+    <button class="menuitem" data-act="requests">${ic("swap")} Mina förfrågningar</button>
     <button class="menuitem" data-act="calendar">${ic("calendar")} Synka till kalender</button>
-    <button class="menuitem" data-act="chmail">${ic("pencil")} Byt mejladress</button>
+    ${profs && !profs.length ? `<button class="menuitem" data-act="chmail">${ic("pencil")} Byt mejladress</button>` : ""}
     ${iAmAdminSomewhere ? `<button class="menuitem" data-act="viewas">${ic("user")} Visa som …</button>` : ""}
     <button class="menuitem" data-act="logout">${ic("logout")} Logga ut</button>`;
   m.querySelectorAll("[data-act]").forEach(b=> b.onclick = ()=> profileAction(b.getAttribute("data-act")));
@@ -2635,30 +2716,25 @@ function buildProfileMenu(){
         loadMyStables().then(s=>{ pmState.stables = s.filter(u=> u.id); buildProfileMenu(); }).catch(()=>{ pmState.stables = []; buildProfileMenu(); });
       }
     }
-    if(k === "profiles"){
-      pmState.profilesOpen = !pmState.profilesOpen;
-      if(pmState.profilesOpen && !pmState.myProfiles){
-        db.from("profile_member").select("profile(id,name,stable_id)").eq("email", session.email).then(r=>{
-          pmState.myProfiles = (r.data||[]).map(x=>x.profile).filter(p=> p && p.stable_id === pmState.openStableId);
-          buildProfileMenu();
-        });
-      }
-    }
+    if(k === "profiles") pmState.profilesOpen = !pmState.profilesOpen;
     buildProfileMenu();
   });
   m.querySelectorAll("[data-pmstable]").forEach(b=> b.onclick = (e)=>{
     e.stopPropagation();
     const id = b.getAttribute("data-pmstable");
     pmState.openStableId = pmState.openStableId === id ? null : id;
-    pmState.profilesOpen = false; pmState.myProfiles = null;
     buildProfileMenu();
+  });
+  m.querySelectorAll("[data-pmopen]").forEach(b=> b.onclick = (e)=>{
+    e.stopPropagation();
+    closeMenus();
+    view = { name:"stable", stableId: b.getAttribute("data-pmopen") };
+    render();
   });
   m.querySelectorAll("[data-pmgoto]").forEach(b=> b.onclick = (e)=>{
     e.stopPropagation();
-    focusProfileId = b.getAttribute("data-pmgoto");
-    const sid = pmState.openStableId;
     closeMenus();
-    view = { name:"stable", stableId: sid };
+    view = { name:"profile", stableId: b.getAttribute("data-pmsid"), profileId: b.getAttribute("data-pmgoto") };
     render();
   });
 }
@@ -2680,7 +2756,7 @@ el("btnProfile").onclick = (e)=>{
   const m = el("profileMenu");
   const wasOpen = m.classList.contains("open");
   closeMenus();
-  if(!wasOpen){ resetPmState(); pmTargetId = "profileMenu"; buildProfileMenu(); m.classList.add("open"); }
+  if(!wasOpen){ resetPmState(); pmTargetId = "profileMenu"; buildProfileMenu(); m.classList.add("open"); pmRefresh("profileMenu"); }
 };
 
 /* ---- Hamburgermeny (mobil): nav + profil i ett ---- */
@@ -2690,7 +2766,7 @@ function openBurgerMenu(){
     <button class="menuitem" data-bg="schedule">${ic("calendar")} Schema</button>
     <button class="menuitem" data-bg="mine">${ic("list")} Mina pass</button>
     <button class="menuitem" data-bg="chat">${ic("message")} Chatt</button>
-    <button class="menuitem" data-bg="stable">${ic("settings")} Inställningar</button>
+    ${iCanEditSomewhere ? `<button class="menuitem" data-bg="stable">${ic("settings")} Inställningar</button>` : ""}
     <button class="menuitem" data-bg="theme">${ic(theme==="dark"?"sun":"moon")} ${theme==="dark"?"Ljust läge":"Mörkt läge"}</button>
     <div id="burgerProfile" style="border-top:1px solid var(--line);margin-top:4px;padding-top:2px"></div>`;
   m.querySelectorAll("[data-bg]").forEach(b=> b.onclick = (e)=>{
@@ -2701,6 +2777,7 @@ function openBurgerMenu(){
   });
   resetPmState(); pmTargetId = "burgerProfile"; buildProfileMenu();
   m.classList.add("open");
+  pmRefresh("burgerMenu");
 }
 el("btnBurger").onclick = (e)=>{
   e.stopPropagation();
@@ -2723,7 +2800,7 @@ async function openStablePick(menuId, name){
   m.innerHTML = `<div class="menuhead sub">Laddar…</div>`;
   m.classList.add("open");
   try{
-    const stables = (await loadMyStables()).filter(u=> u.id);
+    const stables = (await loadMyStables()).filter(u=> u.id && (name !== "stable" || u.canEdit));
     if(stables.length <= 1){
       closeMenus();
       if(stables.length === 1){
@@ -2780,11 +2857,18 @@ el("btnSchedule").onclick = (e)=>{
 
 /* ============ Notiser & byt pass ============ */
 let myProfileIds = new Set();   // alla profil-id kopplade till min mejl
+let myProfileList = null;       // samma profiler med namn och stall, för Profil-menyn (null = inte hämtade än)
 
 async function refreshMyProfiles(){
-  if(!session){ myProfileIds = new Set(); return; }
-  const r = await db.from("profile_member").select("profile_id").eq("email", session.email);
-  if(!r.error) myProfileIds = new Set((r.data||[]).map(x=> x.profile_id));
+  if(!session){ myProfileIds = new Set(); myProfileList = null; return; }
+  const r = await db.from("profile_member").select("profile_id,profile(id,name,stable_id,stable(name,org(name)))").eq("email", session.email);
+  if(r.error) return;
+  myProfileIds = new Set((r.data||[]).map(x=> x.profile_id));
+  const seen = new Set();
+  myProfileList = (r.data||[]).map(x=> x.profile).filter(p=> p && !seen.has(p.id) && seen.add(p.id)).map(p=>{
+    const s = p.stable || {}, on = s.org && s.org.name;
+    return { id:p.id, name:p.name, stable_id:p.stable_id, stableLabel: on && on !== s.name ? `${on} · ${s.name}` : (s.name || "Stall") };
+  }).sort((a,b)=> a.stableLabel.localeCompare(b.stableLabel, "sv") || (a.name||"").localeCompare(b.name||"", "sv"));
 }
 
 /* Passbyten i klockan: förfrågningar till mig, och byten som väntar på mitt
@@ -3027,7 +3111,7 @@ function inviteRoleLabel(v){
   return "profilen " + ((v.profile && v.profile.name) || "?");
 }
 /* Bjud in via mejl: stallpersonal, ridlärare eller admin. Rollen delas ut när personen accepterar. */
-async function inviteDialog(){
+async function inviteDialog(preId){
   closeProfileMenu();
   if(!session) return;
   const stables = (await loadMyStables()).filter(u=> u.id && u.isAdmin)
@@ -3072,6 +3156,7 @@ async function inviteDialog(){
       render();
     };
   };
+  if(preId && stables.some(s=> s.id === preId)) ov.querySelector("#iv_stable").value = preId;
   fillRoles();
   ov.querySelector("#iv_stable").onchange = fillRoles;
   ov.querySelector("#iv_cancel").onclick = ()=> ov.remove();
@@ -4127,8 +4212,10 @@ async function renderSchool(stableId){
     curPerm = await mySchoolPerm(stableId);
     curAdmin = curPerm === "admin";
     const permLbl = { admin:'<span class="pill">Admin</span>', teacher:'<span class="pill">Ridlärare</span>', chef:'<span class="pill">Chef</span>', member:'<span class="muted">Medlem</span>' };
-    el("scHead").innerHTML = `<div class="schedeyebrow">Inställningar · Ridskola</div><h1 class="schedname">${esc(st.data.name)}</h1>
-      <p class="sub" style="margin:0">${permLbl[curPerm]||permLbl.member}</p>`;
+    el("scHead").innerHTML = `<div class="schedeyebrow">${curPerm === "member" ? "Mitt stall" : "Inställningar"} · Ridskola</div><h1 class="schedname">${esc(st.data.name)}</h1>
+      <p class="sub" style="margin:0">${permLbl[curPerm]||permLbl.member}</p>
+      ${curAdmin ? `<button class="btn sm" id="scInvite" style="margin-top:12px">${ic("mail")} Bjud in till stallet</button>` : ""}`;
+    if(el("scInvite")) el("scInvite").onclick = ()=> inviteDialog(stableId);
     scData = { stable: st.data };
     await reloadSchool();
     renderUnitDanger("scTreeCard", stableId, st.data.name);
