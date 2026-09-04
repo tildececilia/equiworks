@@ -352,6 +352,10 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
   .stattbl thead th{font-size:.66rem;letter-spacing:0}
 }
 /* Kryssrutan "endast mina pass" nere till vänster i schemarutan */
+/* Hjälptexten i kalenderrutan */
+.calhelp{margin:0 0 16px;font-size:.84rem}
+.calhelp summary{cursor:pointer;font-weight:700;color:var(--accent);margin-bottom:6px}
+.calhelp p{margin:0 0 8px;font-size:.84rem;line-height:1.45}
 label.chk.sm.schedmine{display:inline-flex;font-size:.75rem;font-weight:600;color:var(--muted);gap:7px;
   padding:0;margin-top:10px;line-height:1.2;white-space:nowrap}
 label.chk.sm.schedmine input{width:14px;height:14px}

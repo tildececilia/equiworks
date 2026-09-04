@@ -2616,6 +2616,7 @@ function buildProfileMenu(){
     ${tree}
     <button class="menuitem" data-act="newstable">${ic("plus")} Nytt stall</button>
     <button class="menuitem" data-act="invite">${ic("mail")} Bjud in till stallet</button>
+    <button class="menuitem" data-act="calendar">${ic("calendar")} Synka till kalender</button>
     <button class="menuitem" data-act="chmail">${ic("pencil")} Byt mejladress</button>
     ${iAmAdminSomewhere ? `<button class="menuitem" data-act="viewas">${ic("user")} Visa som …</button>` : ""}
     <button class="menuitem" data-act="logout">${ic("logout")} Logga ut</button>`;
@@ -2666,6 +2667,7 @@ async function profileAction(act){
   if(act==="requests"){ gotoView("requests"); return; }
   if(act==="newstable"){ createOrgDialog(); return; }
   if(act==="invite"){ inviteDialog(); return; }
+  if(act==="calendar"){ calendarDialog(); return; }
   if(act==="chmail"){ changeEmailDialog(); return; }
   if(act==="viewas"){ if(await refreshAdminFlag()) viewAsDialog(); return; }
   if(act==="logout"){
@@ -3118,6 +3120,55 @@ el("btnBell").onclick = (e)=>{
   if(!wasOpen) openBellMenu();
 };
 
+/* ---- Kalenderprenumeration: en personlig länk som telefonens kalender hämtar ---- */
+const CAL_FN = "smart-api";  // funktionen fick Supabases föreslagna namn när den skapades
+function calUrl(token){ return cfg.SUPABASE_URL + "/functions/v1/" + CAL_FN + "?t=" + encodeURIComponent(token); }
+async function calendarDialog(){
+  const ov = document.createElement("div"); ov.className = "modal-ov";
+  ov.innerHTML = `<div class="modal"><h3>Synka till kalender</h3>
+    <p style="margin:0 0 14px">Hämtar din personliga länk…</p></div>`;
+  document.body.appendChild(ov);
+  ov.onclick = (e)=>{ if(e.target === ov) ov.remove(); };
+
+  const rita = (token, fel)=>{
+    if(fel){
+      ov.querySelector(".modal").innerHTML = `<h3>Synka till kalender</h3>
+        ${msg("Kunde inte hämta kalenderlänken: " + fel + " — kör db/kalender.sql i Supabase först.", "err")}
+        <div class="modal-btns"><button class="btn primary" id="calClose">Stäng</button></div>`;
+      ov.querySelector("#calClose").onclick = ()=> ov.remove();
+      return;
+    }
+    const url = calUrl(token);
+    const webcal = url.replace(/^https?:/, "webcal:");
+    ov.querySelector(".modal").innerHTML = `<h3>Synka till kalender</h3>
+      <p style="margin:0 0 12px">Dina bokade pass hamnar automatiskt i telefonens kalender. Länken är personlig — dela den inte.</p>
+      <div class="field"><input type="text" id="calUrlF" readonly value="${esc(url)}" style="font-size:.8rem"></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px">
+        <button class="btn sm primary" id="calCopy">Kopiera länken</button>
+        <a class="btn sm" href="${esc(webcal)}">Öppna i kalendern</a>
+      </div>
+      <details class="calhelp"><summary>Så lägger du in den</summary>
+        <p><b>iPhone:</b> Inställningar → Appar → Kalender → Kalenderkonton → Lägg till konto → Annat → Lägg till prenumererad kalender → klistra in länken.</p>
+        <p><b>Google Kalender</b> (dator): Andra kalendrar → + → Från URL → klistra in länken.</p>
+        <p class="meta2">Kalendern hämtar nya pass med jämna mellanrum — hur ofta bestämmer telefonen, oftast några timmar. Passen ligger kvar 60 dagar bakåt.</p>
+      </details>
+      <div class="modal-btns"><button class="btn" id="calNy">Ny länk</button><button class="btn primary" id="calClose">Stäng</button></div>`;
+    ov.querySelector("#calClose").onclick = ()=> ov.remove();
+    ov.querySelector("#calCopy").onclick = async ()=>{
+      const b = ov.querySelector("#calCopy");
+      try{ await navigator.clipboard.writeText(url); b.textContent = "Kopierad!"; }
+      catch(e){ el("calUrlF").select(); b.textContent = "Markerad — kopiera"; }
+      setTimeout(()=>{ b.textContent = "Kopiera länken"; }, 2500);
+    };
+    ov.querySelector("#calNy").onclick = async ()=>{
+      if(!(await confirmDialog("Den gamla länken slutar då att fungera, och kalendrar som redan lagt in den slutar uppdateras. Vill du skapa en ny?", { title:"Ny kalenderlänk", okText:"Ja, skapa ny" }))) return;
+      const r = await db.rpc("new_cal_token");
+      if(r.error) rita(null, r.error.message); else rita(r.data);
+    };
+  };
+  const r = await db.rpc("my_cal_token");
+  if(r.error) rita(null, r.error.message); else rita(r.data);
+}
 function infoDialog(text, title){
   return new Promise(res=>{
     const ov = document.createElement("div"); ov.className = "modal-ov";
