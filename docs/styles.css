@@ -327,6 +327,34 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 .statrow:first-child{border-top:none}
 .statrow .sn{font-weight:700;flex-basis:100%;margin-bottom:1px}
 .statrow.me .sn{color:var(--accent)}
+/* Måltalen som tabell: en kolumn per kategori, en rad per profil */
+.stattblwrap{overflow-x:auto;margin:0 -4px}
+.stattbl{width:100%;border-collapse:collapse;font-size:.82rem;font-variant-numeric:tabular-nums}
+.stattbl th,.stattbl td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+.stattbl thead th{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;color:var(--muted);
+  border-bottom:1px solid var(--line);border-radius:8px 8px 0 0}
+.stattbl th[scope="row"]{text-align:left;font-weight:700;white-space:normal;min-width:120px;
+  display:table-cell;position:sticky;left:0;background:var(--card)}
+.stattbl thead th:first-child{text-align:left;position:sticky;left:0;background:var(--card);z-index:1}
+.stattbl tbody tr:last-child th,.stattbl tbody tr:last-child td{border-bottom:none}
+.stattbl .stnamn{margin-right:5px}
+.stattbl tr.me th[scope="row"]{color:var(--accent)}
+.stattbl td.done{color:var(--accent);font-weight:700;background:var(--accent-soft)}
+.stattbl td.kvar{font-weight:600}
+.stattbl td.tom{color:var(--muted)}
+.stattbl tr.late th[scope="row"]{color:var(--danger)}
+.stattbl td.late{color:var(--danger);font-weight:700;background:rgba(192,69,59,.09)}
+.stattbl .tagpill{font-size:.66rem;padding:1px 7px}
+@media (max-width:520px){
+  .stattbl{font-size:.78rem}
+  .stattbl th,.stattbl td{padding:6px 5px}
+  .stattbl th[scope="row"]{min-width:92px}
+  .stattbl thead th{font-size:.66rem;letter-spacing:0}
+}
+/* Kryssrutan "endast mina pass" nere till vänster i schemarutan */
+label.chk.sm.schedmine{display:inline-flex;font-size:.75rem;font-weight:600;color:var(--muted);gap:7px;
+  padding:0;margin-top:10px;line-height:1.2;white-space:nowrap}
+label.chk.sm.schedmine input{width:14px;height:14px}
 .statcat{font-size:.8rem;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--card-2);border:1px solid var(--line);font-variant-numeric:tabular-nums}
 .statcat.done{background:var(--accent-soft);color:var(--accent);border-color:transparent}
 /* Efter deadline: den som fortfarande saknar pass markeras rött */
@@ -393,6 +421,8 @@ h1.title{font-family:var(--font-head);font-size:1.7rem;margin:0 0 6px}
 .notif:first-child{border-top:none}
 .notif b{font-weight:700}
 .notifbtns{display:flex;gap:8px;margin-top:9px}
+/* Färgprick framför namnet i måltalslistan — samma färg som personens brickor i schemat */
+.pdot{display:inline-block;width:9px;height:9px;border-radius:999px;margin-right:6px;flex:0 0 auto;vertical-align:baseline}
 .schip.clickable{cursor:pointer}
 .schip.clickable:hover{filter:brightness(.95)}
 .btn.block{display:block;width:100%;text-align:left}

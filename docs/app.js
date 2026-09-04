@@ -213,6 +213,7 @@ let schedMonth = null;   // första dagen i månadsvyns månad
 let schedPassSel = null; // valt pass (visar beskrivning och bokningar under schemat)
 let schedCtx = null;     // {stable, groups, passes, myProfiles, actingProfileId}
 let schedLogOpen = false; // händelseloggen utfälld?
+let schedOnlyMine = false; // visa bara de pass jag själv står på
 
 /* ---- Färgkodning: personfärg på namn + kategorinyans på rutor ---- */
 function hashHue(s){
@@ -221,7 +222,39 @@ function hashHue(s){
   h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15;
   return ((h % 360) + 360) % 360;
 }
-function profChipStyle(pid){ const h = hashHue(String(pid)); return `background:hsla(${h},55%,45%,.20)`; }
+/* Egen färg per profil. Två profiler i samma grupp får aldrig samma färg —
+   olika grupper får gärna återanvända färgerna, listan börjar om för varje grupp. */
+// inga gröna toner — appens bakgrund och tema är gröna, profilerna ska sticka ut mot dem
+const PROF_HUES = [212, 32, 276, 338, 196, 55, 250, 14, 300, 232, 320, 262, 42, 8];
+let _profHueSrc = null, _profHueMap = {};
+function profHue(pid){
+  const list = (schedCtx && schedCtx.profiles) || null;
+  if(list !== _profHueSrc){
+    _profHueSrc = list;
+    _profHueMap = {};
+    const rank = {}; ((schedCtx && schedCtx.groups) || []).forEach((g,i)=> rank[g.id] = i);
+    const tagna = {};   // grupp -> färger som redan används i den gruppen
+    (list||[]).forEach((pr, i)=>{
+      // en profil kan ha hästar i flera grupper — färgen måste vara ledig i allihop
+      let gs = [...new Set((pr.horse||[]).map(h=> h.group_id).filter(Boolean))];
+      if(!gs.length) gs = ["ingen"];
+      gs.sort((a,b)=> (rank[a]==null?999:rank[a]) - (rank[b]==null?999:rank[b]));
+      gs.forEach(g=> tagna[g] = tagna[g] || new Set());
+      let hue = PROF_HUES.find(h=> gs.every(g=> !tagna[g].has(h)));
+      if(hue == null) hue = PROF_HUES[i % PROF_HUES.length];   // fler profiler än färger
+      _profHueMap[pr.id] = hue;
+      gs.forEach(g=> tagna[g].add(hue));
+    });
+  }
+  const h = _profHueMap[pid];
+  // okänd profil (t.ex. borttagen): välj ändå ur paletten så färgen aldrig blir grön
+  return h == null ? PROF_HUES[Math.floor(hashHue(String(pid)) / 360 * PROF_HUES.length) % PROF_HUES.length] : h;
+}
+function profChipStyle(pid){
+  const h = profHue(pid);
+  return `background:hsla(${h},60%,45%,.22);box-shadow:inset 0 0 0 1px hsla(${h},55%,42%,.45)`;
+}
+function profDot(pid){ return `<span class="pdot" style="background:hsl(${profHue(pid)},52%,42%)"></span>`; }
 const CAT_HUES = [150, 95, 172, 128, 60];   // olika gröna nyanser (och gulgrönt) per kategori
 function buildCatTints(passes){
   const m = {}; let i = 0;
@@ -1957,13 +1990,17 @@ function taskInfoDialog(t){
 }
 /* Uppgifter: pass utan datum som gäller hela jourperioden.
    Bokningen sparas på periodens första dag, så den räknas som vilket pass som helst. */
-async function taskList(tasks, days, myIds){
+async function taskList(tasks, days, myIds, onlyMine){
   if(!tasks.length) return "";
   const ps = periodStart(days[0]);
   const psISO = isoDate(ps);
   const bq = await db.from("booking").select("id,pass_id,profile_id,profile(name)")
     .eq("stable_id", schedCtx.stable.id).eq("pass_date", psISO).in("pass_id", tasks.map(t=> t.id));
   const bks = bq.error ? [] : (bq.data||[]);
+  if(onlyMine){
+    tasks = tasks.filter(t=> bks.some(b2=> b2.pass_id === t.id && myIds.has(b2.profile_id)));
+    if(!tasks.length) return "";
+  }
   const rel = releaseInfo(ps);
   const forbi = new Date(ps); forbi.setDate(forbi.getDate() + (schedCtx.stable.rotation_basis === "month" ? 40 : 7));
   const passerat = forbi < new Date();
@@ -2094,20 +2131,35 @@ async function drawGrid(keepScroll){
   }
 
   schedCtx.catTint = buildCatTints(passes);
+  // "endast mina pass": bara de dagar och pass där jag själv står bokad
+  const mineOn = schedOnlyMine && myIds.size > 0;
+  const harMitt = (pid, dISO)=> (map[pid+"|"+dISO]||[]).some(bk=> myIds.has(bk.profile_id));
+  let visPass = passes, visDays = days;
+  if(mineOn){
+    visPass = passes.filter(p=> days.some(d=> harMitt(p.id, isoDate(d))));
+    visDays = days.filter(d=> visPass.some(p=> harMitt(p.id, isoDate(d))));
+  }
+  const mineChk = `<label class="chk sm schedmine"><input type="checkbox" id="schMine"${
+    schedOnlyMine?" checked":""}> Visa endast mina pass</label>`;
   let html = schedNotices(days, map, passes, myIds);
-  html += `<div class="card schedcard" style="overflow-x:auto"><div class="sgrid" style="--cols:${passes.length}">`;
+  html += `<div class="card schedcard" style="overflow-x:auto">`;
+  if(mineOn && !visDays.length){
+    html += `<div class="empty">Du står inte på något pass ${schedMode==="day"?"den här dagen":"den här veckan"}.</div>`;
+    html += mineChk + `</div>`;
+  } else {
+  html += `<div class="sgrid" style="--cols:${visPass.length}">`;
   // rubrikrad: hörn + pass (vågrätt)
   html += `<div class="scorner"></div>`;
-  passes.forEach(p=>{
+  visPass.forEach(p=>{
     const hu = schedCtx.catTint[p.category_id];
     const hstyle = hu != null ? ` style="background:hsla(${hu},45%,45%,.13);border-radius:8px"` : "";
     html += `<div class="sph${schedPassSel===p.id?" sel":""}"${hstyle} data-selpass="${p.id}" title="Visa beskrivning och bokningar"><span class="pn">${esc(p.name)}</span><span class="pt">${esc(p.start_time||"")}${p.capacity>1?" · "+p.capacity+"p":""}${(p.description||"").trim()?" ⓘ":""}</span></div>`;
   });
   // en rad per veckodag (lodrätt)
-  days.forEach(d=>{
+  visDays.forEach(d=>{
     const dISO = isoDate(d);
     const wknd = (d.getDay()===0 || d.getDay()===6);
-    const applicable = passes.filter(p=> passApplies(p, d));
+    const applicable = visPass.filter(p=> passApplies(p, d) && (!mineOn || harMitt(p.id, dISO)));
     const dayDone = applicable.length > 0 && applicable.every(p=> (map[p.id+"|"+dISO]||[]).length >= (p.capacity||1));
     if(!applicable.length){
       // inga pass den dagen — en smal rad över hela bredden i stället för tomma rutor
@@ -2116,10 +2168,11 @@ async function drawGrid(keepScroll){
       return;
     }
     html += `<div class="sdl${dISO===tISO?" today":""}${wknd?" weekend":""}${dayDone?" done":""}"><span class="dn">${SHORT_DAYS[d.getDay()]}</span><span class="dd">${d.getDate()}/${d.getMonth()+1}</span></div>`;
-    passes.forEach(p=>{ html += scheduleCell(p, d, dISO, map, myIds, tISO); });
+    visPass.forEach(p=>{ html += scheduleCell(p, d, dISO, map, myIds, tISO); });
   });
-  html += `</div></div>`;
-  html += await taskList(tasks, days, myIds);
+  html += `</div>` + mineChk + `</div>`;
+  }
+  html += await taskList(tasks, days, myIds, mineOn);
   if(schedPassSel) html += passPanel(schedPassSel, map, days);
   html += renderStats(tgt, myIds, days[0]);   // statistiken under schemat
   const ordHtml = releaseOrderBlock(days[0], myIds);
@@ -2138,6 +2191,8 @@ async function drawGrid(keepScroll){
     const t = (schedCtx.passes||[]).find(x=> x.id === b2.getAttribute("data-taskinfo"));
     if(t) taskInfoDialog(t);
   });
+  const cbMine = el("schMine");
+  if(cbMine) cbMine.onchange = ()=>{ schedOnlyMine = cbMine.checked; drawGrid(true); };
   host.querySelectorAll("[data-ordinfo]").forEach(n=> n.onclick = ()=> ordDialog(n.getAttribute("data-ordinfo")));
   host.querySelectorAll("[data-booktask]").forEach(b2=> b2.onclick = ()=>{
     const [tid, dISO] = b2.getAttribute("data-booktask").split("|");
@@ -2477,26 +2532,32 @@ function renderStats(tgt, myIds, d0){
   if(!pids.length) return `<div class="card"><p class="sub" style="margin:0">Inga hästar i ${esc(tgt.duty.name)} den här veckan.</p></div>`;
   const catKeys = Object.keys(tgt.cats).filter(k=> tgt.cats[k].total > 0);
   const efterDl = deadlinePassed(d0 || weekStart2);
+  // en kolumn per kategori — lättare att jämföra rakt nedåt än en rad med brickor
+  const head = catKeys.map(k=>{
+    const hu = (schedCtx.catTint || {})[k];
+    const st = hu != null ? ` style="background:hsla(${hu},45%,45%,.12)"` : "";
+    return `<th${st}>${esc(tgt.cats[k].name)}</th>`;
+  }).join("");
   const rows = pids.map(pid=>{
     const pr = tgt.perProfile[pid];
     const mine = myIds.has(pid);
     let saknar = 0;
-    const chips = catKeys.map(k=>{
+    const celler = catKeys.map(k=>{
       const c = pr.byCat[k] || { name:tgt.cats[k].name, target:0, actual:0 };
       const done = c.target > 0 && c.actual >= c.target;
       if(!done && c.target > 0) saknar += c.target - c.actual;
-      const hu = (schedCtx.catTint || {})[k];
-      const ts = (!done && hu != null && !efterDl) ? ` style="background:hsla(${hu},45%,45%,.12)"` : "";
-      return `<span class="statcat ${done?"done":(efterDl?"late":"")}"${ts}>${esc(c.name)} ${c.actual}/${c.target}</span>`;
+      const kl = c.target === 0 ? "tom" : (done ? "done" : (efterDl ? "late" : "kvar"));
+      return `<td class="${kl}">${c.actual}/${c.target}</td>`;
     }).join("");
-    // efter deadline: markera den som fortfarande saknar pass
     const sen = efterDl && saknar > 0;
-    return `<div class="statrow${mine?" me":""}${sen?" late":""}"><span class="sn">${esc(pr.name)}${
-      sen?` <span class="tagpill st-no">saknar ${saknar}</span>`:""}</span>${chips}</div>`;
+    return `<tr class="${mine?"me ":""}${sen?"late":""}"><th scope="row">${profDot(pid)}<span class="stnamn">${esc(pr.name)}</span>${
+      sen?`<span class="tagpill st-no">saknar ${saknar}</span>`:""}</th>${celler}</tr>`;
   }).join("");
   return `<div class="card">
     <p class="sub" style="margin:0 0 8px">Måltal denna vecka <span class="sectionhint">— ${esc(tgt.duty.name)}, viktat efter hästar</span></p>
-    <div class="statwrap">${rows}</div>
+    <div class="stattblwrap"><table class="stattbl">
+      <thead><tr><th scope="col">Profil</th>${head}</tr></thead>
+      <tbody>${rows}</tbody></table></div>
     <button class="iconbtn" id="statBtn" title="Statistik per häst">${ic("chart")}</button></div>`;
 }
 
