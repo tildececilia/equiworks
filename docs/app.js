@@ -2501,14 +2501,23 @@ function computeTargets(monday){
   horses.forEach(h=>{ if(!perProfile[h.profileId]) perProfile[h.profileId] = { name:h.profileName, byCat:{} }; });
 
   if(nH > 0){
-    Object.keys(cats).forEach(catKey=>{
+    // Kategorierna i stallets ordning, så fördelningen blir densamma oavsett hämtningsordning
+    const catOrder = (schedCtx.cats||[]).map(c=> c.id).concat(["none"]).filter(k=> cats[k]);
+    Object.keys(cats).forEach(k=>{ if(!catOrder.includes(k)) catOrder.push(k); });
+    // Extrapassen (resten som inte går jämnt ut på hästarna) delas ut i tur och ordning
+    // ÖVER kategorierna — inte från samma startpunkt i varje kategori, för då hamnade
+    // alla extrapass på samma hästar (5 hästar, 8 fodringar: tre fick 2, två fick 1,
+    // och samma tre fick extrapassen i utsläpp, städ och spolspiltor också).
+    // Pekaren flyttas fram ett varv per gruppens tur, så det roterar mellan perioderna.
+    const sumRem = catOrder.reduce((a,k)=> a + cats[k].total % nH, 0);
+    let ptr = sumRem ? (((turn * sumRem) % nH) + nH) % nH : 0;
+    catOrder.forEach(catKey=>{
       const total = cats[catKey].total;
       const base = Math.floor(total / nH);
       const rem  = total % nH;
-      // extrapassen går till "rem" hästar, med startpunkt som roterar per gruppens tur
-      const start = rem > 0 ? (((turn * rem) % nH) + nH) % nH : 0;
       const extra = new Set();
-      for(let k=0;k<rem;k++) extra.add((start + k) % nH);
+      for(let k=0;k<rem;k++) extra.add((ptr + k) % nH);
+      ptr = (ptr + rem) % nH;
       horses.forEach((h, idx)=>{
         const t = base + (extra.has(idx) ? 1 : 0);
         const pc = perProfile[h.profileId].byCat;
