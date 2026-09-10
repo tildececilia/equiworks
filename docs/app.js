@@ -3439,7 +3439,7 @@ async function renderMyLessons(stableId){
       const d = new Date(today); d.setDate(d.getDate()+i);
       const wd = ((d.getDay()+6)%7)+1;
       const dayRel = mlTab === "lek" ? rel.filter(gr=> gr.weekday === wd).sort((a,b)=> timeKey(a)-timeKey(b)) : [];
-      const dayTasks = mlTab === "pass" ? passTasks.filter(t2=> t2.weekday === wd).sort((a,b)=> timeKey(a)-timeKey(b)) : [];
+      const dayTasks = mlTab === "pass" ? passTasks.filter(t2=> taskOn(t2, isoDate(d))).sort((a,b)=> timeKey(a)-timeKey(b)) : [];
       if(!dayRel.length && !dayTasks.length) continue;
       const dISO = isoDate(d);
       html += `<div class="sublabel" style="margin-top:16px">${RS_WD[wd]} ${d.getDate()}/${d.getMonth()+1}${dISO===tISO?' · <span style="color:var(--accent)">idag</span>':""}</div>`;
@@ -3482,6 +3482,7 @@ async function renderMyLessons(stableId){
       });
       dayRel.forEach(gr=>{
         const note = notes.find(x=> x.group_id===gr.id && x.lesson_date===dISO);
+        const theory = isTheory(gr, dISO, notes);
         const roles = [];
         if(gstaff.some(x=> x.group_id===gr.id && myStaff.has(x.staff_id))) roles.push(`<div class="meta2">Du är personal på lektionen</div>`);
         if(ginstr.some(x=> x.group_id===gr.id && myInstr.has(x.instructor_id))) roles.push(`<div class="meta2">Du är ledare på lektionen</div>`);
@@ -3493,13 +3494,14 @@ async function renderMyLessons(stableId){
           const sickBit = sick
             ? `<span class="tagpill st-no" data-mlunsick="${gr.id}|${dISO}|${stu.id}" style="cursor:pointer" title="Ta bort sjukanmälan">sjuk</span>`
             : `<button class="btn sm" data-mlsick="${gr.id}|${dISO}|${stu.id}">Sjukanmäl</button>`;
-          return `<div class="scsrow${sick?" scssick":""}"><span class="scsname">${esc(stu.name)}</span><span class="meta2">Häst: ${esc(hn)}</span>${sickBit}</div>`;
+          return `<div class="scsrow${sick?" scssick":""}"><span class="scsname">${esc(stu.name)}</span>${theory?"":`<span class="meta2">Häst: ${esc(hn)}</span>`}${sickBit}</div>`;
         }).join("");
         html += `<div class="card">
           <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
             <b>${esc(gr.name)}</b>
             <span class="meta2">${gr.start_time}–${rsEndTime(gr.start_time, gr.duration_min)}</span>
             ${gr.category&&gr.category.name?`<span class="tagpill">${esc(gr.category.name)}</span>`:""}
+            ${theory?`<span class="tagpill st-pend">📖 Teori</span>`:""}
           </div>
           ${note && (note.note||"").trim() ? `<div class="meta2" style="margin-top:4px">Planering: ${esc(note.note)}</div>` : ""}
           ${roles.join("")}
@@ -4169,8 +4171,30 @@ function swapDialog(mode, o){
   };
 }
 /* Arbetstidsvarningar för ett arbetspass: för långt pass, dubbelbokning och dygnsvila under 11 h */
+/* Arbetspassets dagar: weekdays (flera) eller bara weekday; task_date = gäller ett enda datum */
+function wdOfISO(iso){ const d = new Date(iso + "T00:00:00"); return ((d.getDay()+6)%7)+1; }
+function taskDays(t){ return (Array.isArray(t.weekdays) && t.weekdays.length) ? t.weekdays.slice().sort((a,b)=> a-b) : [t.weekday]; }
+function taskOn(t, dISO){ return t.task_date ? t.task_date === dISO : taskDays(t).includes(wdOfISO(dISO)); }
+function taskDaysLabel(t){
+  if(t.task_date){ const d = new Date(t.task_date + "T00:00:00"); return `${RS_WD[wdOfISO(t.task_date)]} ${d.getDate()}/${d.getMonth()+1} · bara det datumet`; }
+  const ds = taskDays(t);
+  if(ds.length === 5 && [1,2,3,4,5].every(x=> ds.includes(x))) return "Mån–fre";
+  if(ds.length === 7) return "Alla dagar";
+  return ds.map(w=> RS_WD[w]).join(", ");
+}
+/* Schemats block: ett per veckodag passet gäller; engångspass bär sitt datum */
+function taskSchedItems(){
+  const out = [];
+  (scData.tasks||[]).forEach(t=>{
+    if(t.task_date) out.push({ type:"task", o:t, wd: wdOfISO(t.task_date), date: t.task_date, start: timeKey(t), dur: t.duration_min||60 });
+    else taskDays(t).forEach(wd=> out.push({ type:"task", o:t, wd, start: timeKey(t), dur: t.duration_min||60 }));
+  });
+  return out;
+}
+function taskItemsOf(tid){ return (scData.taskItems||[]).filter(i=> i.task_id === tid).sort((a,b)=> (a.sort_order||0) - (b.sort_order||0)); }
 function taskWorkWarnings(tk){
   const warns = [];
+  const daysOf = t=> t.task_date ? [wdOfISO(t.task_date)] : taskDays(t);
   if((tk.duration_min||0) > 600) warns.push(`Passet är ${(tk.duration_min/60).toFixed(1).replace(".0","")} timmar långt — över 10 timmar`);
   const staffIds = (scData.taskStaff||[]).filter(x=> x.task_id === tk.id).map(x=> x.staff_id);
   staffIds.forEach(fid=>{
@@ -4181,16 +4205,19 @@ function taskWorkWarnings(tk){
       if(o.id === tk.id) return;
       const s1 = timeKey(tk), e1 = s1 + (tk.duration_min||60);
       const s2 = timeKey(o), e2 = s2 + (o.duration_min||60);
-      if(o.weekday === tk.weekday){
+      const dA = daysOf(tk), dB = daysOf(o);
+      if(tk.task_date && o.task_date && tk.task_date !== o.task_date) return;   // olika datum — rör inte varandra
+      if(dA.some(x=> dB.includes(x))){
         if(s1 < e2 && s2 < e1) warns.push(`${f.name} är dubbelbokad: ${o.name} (${o.start_time}–${rsEndTime(o.start_time,o.duration_min)}) samma dag`);
-        return;
       }
-      // dygnsvila: passet dagen innan → detta pass (och tvärtom)
-      const dayDiff = (tk.weekday - o.weekday + 7) % 7;
-      if(dayDiff === 1){
+      // dygnsvila: passet dagen innan → detta pass (och tvärtom), för varje kombination av dagar
+      const before = dA.some(a=> dB.some(b=> (a - b + 7) % 7 === 1));
+      const after  = dA.some(a=> dB.some(b=> (a - b + 7) % 7 === 6));
+      if(before){
         const rest = 1440 - e2 + s1;
         if(rest < 660) warns.push(`${f.name} får bara ${Math.floor(rest/60)} h ${rest%60 ? (rest%60)+" min " : ""}vila mellan ${o.name} (slut ${rsEndTime(o.start_time,o.duration_min)}) och det här passet — under 11 h dygnsvila`);
-      } else if(dayDiff === 6){
+      }
+      if(after){
         const rest = 1440 - e1 + s2;
         if(rest < 660) warns.push(`${f.name} får bara ${Math.floor(rest/60)} h ${rest%60 ? (rest%60)+" min " : ""}vila mellan det här passet (slut ${rsEndTime(tk.start_time,tk.duration_min)}) och ${o.name} dagen efter — under 11 h dygnsvila`);
       }
@@ -4233,7 +4260,7 @@ async function renderSchool(stableId){
 
 async function reloadSchool(){
   const sid = scStableId;
-  const [g,c,s,h,l,gs,sf,sfc,gh,gf,tk,tf,hc,ec,ins,gi,sn,pl] = await Promise.all([
+  const [g,c,s,h,l,gs,sf,sfc,gh,gf,tk,tf,hc,ec,ins,gi,sn,pl,ht,htl,ti] = await Promise.all([
     db.from("rs_group").select("*, category(name)").eq("stable_id", sid).order("weekday").order("start_time"),
     db.from("category").select("*").eq("stable_id", sid).order("sort_order"),
     db.from("rs_student").select("id,name,description,category_id,rs_student_member(email)").eq("stable_id", sid).order("name"),
@@ -4251,7 +4278,10 @@ async function reloadSchool(){
     db.from("rs_instructor").select("id,name,description,rs_instructor_member(email)").eq("stable_id", sid).order("name"),
     db.from("rs_group_instructor").select("*"),
     db.from("rs_student_note").select("*"),
-    db.from("rs_place").select("*").eq("stable_id", sid).order("sort_order")
+    db.from("rs_place").select("*").eq("stable_id", sid).order("sort_order"),
+    db.from("rs_horse_tag").select("*").eq("stable_id", sid).order("sort_order"),
+    db.from("rs_horse_tag_link").select("*"),
+    db.from("rs_task_item").select("*")
   ]);
   const err = g.error || c.error || s.error || h.error;
   if(err){ el("scTreeCard").innerHTML = msg("Kunde inte hämta data: " + err.message + " (har du kört db/ridskola.sql?)", "err"); return; }
@@ -4262,7 +4292,9 @@ async function reloadSchool(){
              tasks: tk.error?[]:tk.data, taskStaff: tf.error?[]:tf.data,
              horseCats: hc.error?[]:hc.data, studentCats: ec.error?[]:ec.data,
              instructors: ins.error?[]:ins.data, ginstr: gi.error?[]:gi.data,
-             studentNotes: sn.error?[]:sn.data, places: pl.error?[]:pl.data };
+             studentNotes: sn.error?[]:sn.data, places: pl.error?[]:pl.data,
+             horseTags: ht.error?[]:ht.data, horseTagLinks: htl.error?[]:htl.data,
+             taskItems: ti.error?[]:ti.data };
   renderSchoolTree();
 }
 
@@ -4303,6 +4335,33 @@ function scCatPick(selId, items, cats, btnHtml){
 function scDescLeaf(val, lvl){ return (val||"").trim() ? `<div class="tleaf lvl${lvl} tmuted tdesc">${esc(val)}</div>` : ""; }
 /* Elevanteckningar bor i skyddade rs_student_note — syns bara för admin, ridlärare och elevens målsmän */
 function scStudentNote(id){ const n = (scData.studentNotes||[]).find(x=> x.student_id === id); return n ? n.note : null; }
+function scStudentNoteRow(id){ return (scData.studentNotes||[]).find(x=> x.student_id === id) || null; }
+/* Vikt · längd · bedömning som läsrad under eleven (syns bara för dem som får se anteckningen) */
+function scStudentFacts(id){
+  const n = scStudentNoteRow(id); if(!n) return "";
+  const bits = [];
+  if(n.weight_kg != null && n.weight_kg !== "") bits.push(`${String(n.weight_kg).replace(".", ",")} kg`);
+  if(n.height_cm != null && n.height_cm !== "") bits.push(`${n.height_cm} cm`);
+  let out = bits.length ? `<div class="tleaf lvl2 tmuted">${esc(bits.join(" · "))}</div>` : "";
+  if((n.assessment||"").trim()) out += `<div class="tleaf lvl2 tmuted tdesc">Bedömning: ${esc(n.assessment)}</div>`;
+  return out;
+}
+/* Hästens taggar (flera per häst, utöver kategorin) */
+function horseTags(hid){
+  const ids = (scData.horseTagLinks||[]).filter(x=> x.horse_id === hid).map(x=> x.tag_id);
+  return (scData.horseTags||[]).filter(t=> ids.includes(t.id));
+}
+function horseTagPills(hid){ return horseTags(hid).map(t=> ` <span class="tagpill tagx">${esc(t.name)}</span>`).join(""); }
+/* Strängaste dagsregeln bland hästens taggar: {max, tag} eller null */
+function horseDayRule(hid){
+  const rules = horseTags(hid).filter(t=> t.max_per_day > 0).sort((a,b)=> a.max_per_day - b.max_per_day);
+  return rules.length ? { max: rules[0].max_per_day, tag: rules[0].name } : null;
+}
+/* Hur många andra lektioner hästen redan är tilldelad samma dag (räknat på lektion, inte elev) */
+function horseLessonsToday(hid, dISO, exceptGroupId){
+  const gids = new Set((scWeekAsg||[]).filter(x=> x.lesson_date === dISO && x.horse_id === hid && x.group_id !== exceptGroupId).map(x=> x.group_id));
+  return gids.size;
+}
 /* Litet redigeringsformulär för saker som bara har namn + beskrivning */
 function scNameEditRow(kind, key, id, name, desc, lvl, withDesc){
   return `<div class="editrow lvl${lvl}">
@@ -4315,17 +4374,129 @@ function scGroupMeta(g){
   const cat = g.category && g.category.name;
   const n = scData.gstud.filter(x=> x.group_id === g.id).length;
   const pl = g.place_id ? (((scData.places||[]).find(p=> p.id === g.place_id)||{}).name) : null;
-  return `${RS_WD[g.weekday]||"?"} ${g.start_time}–${rsEndTime(g.start_time, g.duration_min)} · ${n}/${g.capacity} elever · häst byts efter ${g.horse_rotation} ggr${cat?` · ${cat}`:""}${pl?` · ${pl}`:""}`;
+  let th = "";
+  if(g.theory_mode === "regular"){
+    const nd = nextTheoryDate(g, new Date());
+    th = ` · teori var ${g.theory_every}:e gång${nd ? `, nästa ${nd.getDate()}/${nd.getMonth()+1}` : ""}`;
+  } else if(g.theory_mode === "manual") th = " · teori markeras i schemat";
+  return `${RS_WD[g.weekday]||"?"} ${g.start_time}–${rsEndTime(g.start_time, g.duration_min)} · ${n}/${g.capacity} elever · häst byts efter ${g.horse_rotation} ggr${cat?` · ${cat}`:""}${pl?` · ${pl}`:""}${th}`;
 }
-/* Krockregel: lektioner som överlappar i tid samma dag varnas — om de har samma plats eller om plats saknas */
-function lessonConflicts(g){
+/* ---- Teori och plats per tillfälle ----
+   Lektionens regel: theory_mode none | manual (ridläraren markerar i schemat) | regular (var N:e gång
+   från theory_from — datumet styr jämna/udda veckor). Ett enskilt tillfälle kan avvika: rs_lesson_note
+   har theory (null = följer regeln) och place_id (null = lektionens standardplats). */
+function lessonNote(gid, dISO, notes){ return (notes || scWeekNotes || []).find(x=> x.group_id === gid && x.lesson_date === dISO); }
+function theoryByRule(g, dISO){
+  if(g.theory_mode !== "regular" || !g.theory_from) return false;
+  const n = Math.max(1, g.theory_every || 1);
+  const a = new Date(g.theory_from + "T00:00:00"), d = new Date(dISO + "T00:00:00");
+  const w = Math.round((d - a) / (7 * 86400000));
+  return ((w % n) + n) % n === 0;
+}
+function isTheory(g, dISO, notes){
+  const nt = lessonNote(g.id, dISO, notes);
+  if(nt && nt.theory != null) return !!nt.theory;
+  return theoryByRule(g, dISO);
+}
+/* Platsen ett visst tillfälle: tillfällets egen, annars teoriplatsen (om teori), annars lektionens */
+function lessonPlaceId(g, dISO, notes){
+  const nt = lessonNote(g.id, dISO, notes);
+  if(nt && nt.place_id) return nt.place_id;
+  return isTheory(g, dISO, notes) ? (g.theory_place_id || null) : (g.place_id || null);
+}
+function placeName(pid){ return pid ? (((scData.places||[]).find(p=> p.id === pid)||{}).name || null) : null; }
+/* Nästa teoritillfälle enligt regeln, från och med ett datum */
+function nextTheoryDate(g, from){
+  if(g.theory_mode !== "regular" || !g.theory_from) return null;
+  const d = new Date(from); d.setHours(0,0,0,0);
+  while((((d.getDay()+6)%7)+1) !== g.weekday) d.setDate(d.getDate()+1);
+  for(let i=0; i<=Math.max(1, g.theory_every||1); i++){
+    if(theoryByRule(g, isoDate(d))) return new Date(d);
+    d.setDate(d.getDate()+7);
+  }
+  return null;
+}
+/* Krockregel: lektioner som överlappar i tid samma dag varnas — om de har samma plats eller om plats
+   saknas. Med datum räknas tillfällets plats och teori (teori utan plats tar inte upp någon bana). */
+function lessonConflicts(g, dISO){
   const s1 = timeKey(g), e1 = s1 + (g.duration_min||60);
+  const gT = dISO ? isTheory(g, dISO) : false;
+  const gP = dISO ? lessonPlaceId(g, dISO) : (g.place_id || null);
+  if(gT && !gP) return [];
   return (scData.groups||[]).filter(o=> o.id !== g.id && o.weekday === g.weekday).filter(o=>{
     const s2 = timeKey(o), e2 = s2 + (o.duration_min||60);
     if(!(s1 < e2 && s2 < e1)) return false;
-    if(g.place_id && o.place_id && g.place_id !== o.place_id) return false;
+    const oT = dISO ? isTheory(o, dISO) : false;
+    const oP = dISO ? lessonPlaceId(o, dISO) : (o.place_id || null);
+    if(oT && !oP) return false;
+    if(gP && oP && gP !== oP) return false;
     return true;
   });
+}
+/* Platsval i lektionsformuläret, med "+ Ny plats…" som fäller ut ett namnfält */
+/* Arbetspassets dagar i formuläret: kryssrutor mån–sön, eller ett enda datum */
+function scTaskDayFields(key, tk){
+  const days = tk.task_date ? [] : taskDays(tk);
+  const boxes = [1,2,3,4,5,6,7].map(w=>`<label class="chk sm"><input type="checkbox" data-twd="${key}" value="${w}"${days.includes(w)?" checked":""}> ${WD_SHORT[w]}</label>`).join("");
+  return `<div class="field"><label class="fld">Dagar</label><div class="tagchk">${boxes}</div></div>
+    <div class="field"><label class="fld">Bara ett datum</label><input type="date" id="sct_date_${key}" value="${esc(tk.task_date||"")}">
+      <div class="meta2" style="margin-top:4px">Fyll i om passet bara gäller en enda dag — annars återkommer det varje vecka på dagarna ovan.</div></div>`;
+}
+async function scTaskDayVals(key){
+  const date = (el("sct_date_"+key)||{}).value || null;
+  let wds = [...document.querySelectorAll(`[data-twd="${key}"]`)].filter(b=> b.checked).map(b=> +b.value).sort((a,b)=> a-b);
+  if(date) wds = [wdOfISO(date)];
+  if(!wds.length){ await infoDialog("Kryssa i minst en dag, eller fyll i ett datum.", "Dagar saknas"); return null; }
+  return { weekday: wds[0], weekdays: wds, task_date: date };
+}
+function scPlaceOpts(cur){
+  return `<option value="">Ingen plats</option>` + (scData.places||[]).map(p=>`<option value="${p.id}"${p.id===cur?" selected":""}>${esc(p.name)}</option>`).join("") + `<option value="__new">+ Ny plats…</option>`;
+}
+function scTheoryFields(key, g){
+  g = g || {};
+  const mode = g.theory_mode || "none";
+  const modeO = [["none","Ingen teori"],["manual","Ridläraren markerar själv i schemat"],["regular","Regelbundet, var N:e gång"]]
+    .map(([v,l])=>`<option value="${v}"${v===mode?" selected":""}>${l}</option>`).join("");
+  const nO = [2,3,4,5,6,8,10].map(n=>`<option value="${n}"${n===(g.theory_every||4)?" selected":""}>Var ${n}:e gång</option>`).join("");
+  return `<div class="field"><label class="fld">Teori</label><select id="scg_theo_${key}" data-theomode="${key}">${modeO}</select></div>
+    <div id="scg_theoreg_${key}" style="display:${mode==="regular"?"":"none"}">
+      <div class="field"><label class="fld">Hur ofta</label><select id="scg_theon_${key}">${nO}</select></div>
+      <div class="field"><label class="fld">Nästa teorilektion</label><input type="date" id="scg_theofrom_${key}" value="${esc(g.theory_from||"")}">
+        <div class="meta2" style="margin-top:4px">Räknas därifrån — så väljer du också om det blir jämna eller udda veckor.</div></div>
+    </div>
+    <div id="scg_theopl_${key}" style="display:${mode==="none"?"none":""}">
+      <div class="field"><label class="fld">Plats för teori</label><select id="scg_theoplace_${key}" data-placesel="${key}">${scPlaceOpts(g.theory_place_id)}</select></div>
+    </div>
+    <div class="field" id="scg_newplacef_${key}" style="display:none"><label class="fld">Namn på den nya platsen</label><input type="text" id="scg_newplace_${key}" placeholder="t.ex. Paddocken"></div>`;
+}
+/* Platsvalets värde — skapar platsen om "+ Ny plats…" valdes (finns för hela ridskolan sedan) */
+async function scResolvePlace(selId, key){
+  const sel = el(selId); if(!sel) return null;
+  if(sel.value !== "__new") return sel.value || null;
+  const name = ((el("scg_newplace_"+key)||{}).value || "").trim();
+  if(!name){ await infoDialog("Skriv namnet på den nya platsen, eller välj en befintlig.", "Plats saknas"); return "__abort"; }
+  const ex = (scData.places||[]).find(p=> (p.name||"").toLowerCase() === name.toLowerCase());
+  if(ex) return ex.id;
+  const r = await db.from("rs_place").insert({ stable_id: scStableId, name, sort_order: (scData.places||[]).length }).select("id").single();
+  if(r.error){ alert("Kunde inte skapa platsen: " + r.error.message + " (har db/platser.sql körts?)"); return "__abort"; }
+  scData.places = (scData.places||[]).concat([{ id: r.data.id, stable_id: scStableId, name, sort_order: (scData.places||[]).length }]);
+  return r.data.id;
+}
+/* Teorifälten som kolumner att spara; datumet knuffas fram till lektionens veckodag */
+async function scTheoryVals(key, weekday){
+  const mode = el("scg_theo_"+key) ? el("scg_theo_"+key).value : "none";
+  const out = { theory_mode: mode, theory_every: parseInt((el("scg_theon_"+key)||{}).value, 10) || 4, theory_from: null };
+  if(mode === "regular"){
+    const v = (el("scg_theofrom_"+key)||{}).value;
+    if(!v){ await infoDialog("Välj datumet för nästa teorilektion.", "Datum saknas"); return null; }
+    const d = new Date(v + "T00:00:00");
+    while((((d.getDay()+6)%7)+1) !== weekday) d.setDate(d.getDate()+1);
+    out.theory_from = isoDate(d);
+  }
+  const pl = mode === "none" ? null : await scResolvePlace("scg_theoplace_"+key, key);
+  if(pl === "__abort") return null;
+  out.theory_place_id = pl;
+  return out;
 }
 
 function renderSchoolTree(){
@@ -4359,7 +4530,8 @@ function renderSchoolTree(){
           <div class="field"><label class="fld">Längd</label><select id="scg_dur_${g.id}">${dO}</select></div>
           <div class="field"><label class="fld">Antal platser</label><select id="scg_cap_${g.id}">${capO}</select></div>
           <div class="field"><label class="fld">Hästbyte efter</label><select id="scg_rot_${g.id}">${rotO}</select></div>
-          <div class="field"><label class="fld">Plats</label><select id="scg_place_${g.id}"><option value="">Ingen plats</option>${(scData.places||[]).map(p=>`<option value="${p.id}"${p.id===g.place_id?" selected":""}>${esc(p.name)}</option>`).join("")}</select></div>
+          <div class="field"><label class="fld">Plats</label><select id="scg_place_${g.id}" data-placesel="${g.id}">${scPlaceOpts(g.place_id)}</select></div>
+          ${scTheoryFields(g.id, g)}
           <div class="field"><label class="fld">Ledare</label><select id="scg_led_${g.id}"><option value="nej"${!g.has_leaders?" selected":""}>Nej</option><option value="ja"${g.has_leaders?" selected":""}>Ja</option></select></div>
           ${scDescField(g.id, g.description)}
           <div class="editbtns"><button class="btn primary sm" data-scs="group:${g.id}">Spara</button><button class="btn sm" data-scc="${g.id}">Avbryt</button></div>
@@ -4436,7 +4608,8 @@ function renderSchoolTree(){
           <div class="field"><label class="fld">Lektionslängd</label><select id="scin_gdur">${dO}</select></div>
           <div class="field"><label class="fld">Antal platser</label><select id="scin_gcap">${capO}</select></div>
           <div class="field"><label class="fld">Hästbyte efter</label><select id="scin_grot">${rotO}</select></div>
-          <div class="field"><label class="fld">Plats</label><select id="scin_gplace"><option value="">Ingen plats</option>${(scData.places||[]).map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("")}</select></div>
+          <div class="field"><label class="fld">Plats</label><select id="scin_gplace" data-placesel="new">${scPlaceOpts(null)}</select></div>
+          ${scTheoryFields("new", null)}
           <div class="editbtns"><button class="btn primary sm" data-sca="group">+ Skapa lektion</button><button class="btn sm" data-scca="group">Avbryt</button></div>
         </div>`);
       } else {
@@ -4474,9 +4647,14 @@ function renderSchoolTree(){
     scData.horses.forEach(h=>{
       if(can && scOpen["edit_h_"+h.id]){
         const hcO = `<option value="">Ingen kategori</option>` + (scData.horseCats||[]).map(c=>`<option value="${c.id}"${c.id===h.category_id?" selected":""}>${esc(c.name)}</option>`).join("");
+        const myTags = horseTags(h.id).map(x=> x.id);
+        const tagBoxes = (scData.horseTags||[]).length
+          ? `<div class="field"><label class="fld">Taggar</label><div class="tagchk">${(scData.horseTags||[]).map(tg=>`<label class="chk sm"><input type="checkbox" data-htag="${h.id}" value="${tg.id}"${myTags.includes(tg.id)?" checked":""}> ${esc(tg.name)}</label>`).join("")}</div></div>`
+          : `<div class="field"><label class="fld">Taggar</label><div class="meta2">Inga taggar än — skapa under Hästar → Taggar.</div></div>`;
         t.push(`<div class="editrow lvl1">
           <div class="field"><label class="fld">Namn</label><input type="text" id="scn_h_${h.id}" value="${esc(h.name)}"></div>
           <div class="field"><label class="fld">Kategori</label><select id="scc_h_${h.id}">${hcO}</select></div>
+          ${tagBoxes}
           ${scDescField("h_"+h.id, h.description)}
           <div class="editbtns"><button class="btn primary sm" data-scs="horse:${h.id}">Spara</button><button class="btn sm" data-scc="h_${h.id}">Avbryt</button></div>
         </div>`);
@@ -4484,7 +4662,7 @@ function renderSchoolTree(){
       }
       const key = "hx_"+h.id;
       const hcat = ((scData.horseCats||[]).find(c=> c.id === h.category_id)||{}).name;
-      t.push(`<div class="trow lvl1 titem" data-t="${key}">${esc(h.name)}${hcat?` <span class="tagpill">${esc(hcat)}</span>`:""} ${scCaret(key)}${can?`<span class="tbtns"><button class="x" data-sce="h_${h.id}" title="Ändra">${ic("pencil")}</button><button class="x" data-scd="horse:${h.id}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`);
+      t.push(`<div class="trow lvl1 titem" data-t="${key}">${esc(h.name)}${hcat?` <span class="tagpill">${esc(hcat)}</span>`:""}${horseTagPills(h.id)} ${scCaret(key)}${can?`<span class="tbtns"><button class="x" data-sce="h_${h.id}" title="Ändra">${ic("pencil")}</button><button class="x" data-scd="horse:${h.id}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`);
       t.push(scDescLeaf(h.description, 2));
       if(scOpen[key]){
         t.push(`<div class="tleaf lvl2 tmuted" style="font-weight:700">Lektioner</div>`);
@@ -4512,6 +4690,27 @@ function renderSchoolTree(){
       });
       if(!(scData.horseCats||[]).length) t.push(`<div class="tleaf lvl2 tmuted">Inga än — t.ex. Hopphäst, Nybörjarvänlig</div>`);
       if(can) t.push(`<div class="addhorse lvl2"><input type="text" id="scin_hcat" placeholder="Ny hästkategori"><button class="btn sm" data-sca="hcat">+ Kategori</button></div>`);
+    }
+    // Taggar: flera per häst, med valfri regel "max N lektioner per dag"
+    t.push(`<div class="trow lvl1" data-t="htags">${ic("tag")} Taggar ${scCaret("htags")}</div>`);
+    if(scOpen.htags){
+      const maxO = cur=> `<option value="">Ingen regel</option>` + [1,2,3,4,5].map(n=>`<option value="${n}"${n===cur?" selected":""}>Max ${n} lektion${n>1?"er":""} per dag</option>`).join("");
+      (scData.horseTags||[]).forEach(tg=>{
+        if(can && scOpen["edit_ht_"+tg.id]){
+          t.push(`<div class="editrow lvl2">
+            <div class="field"><label class="fld">Namn</label><input type="text" id="scn_ht_${tg.id}" value="${esc(tg.name)}"></div>
+            <div class="field"><label class="fld">Regel</label><select id="scm_ht_${tg.id}">${maxO(tg.max_per_day)}</select></div>
+            ${scDescField("ht_"+tg.id, tg.description)}
+            <div class="editbtns"><button class="btn primary sm" data-scs="htag:${tg.id}">Spara</button><button class="btn sm" data-scc="ht_${tg.id}">Avbryt</button></div>
+          </div>`);
+          return;
+        }
+        const n = (scData.horseTagLinks||[]).filter(x=> x.tag_id === tg.id).length;
+        t.push(`<div class="tleaf lvl2">${ic("tag")} ${esc(tg.name)} <span class="meta2">${n} häst${n===1?"":"ar"}${tg.max_per_day?` · max ${tg.max_per_day}/dag`:""}</span>${can?`<span class="tbtns"><button class="x" data-sce="ht_${tg.id}" title="Ändra">${ic("pencil")}</button><button class="x" data-scd="htag:${tg.id}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`);
+        t.push(scDescLeaf(tg.description, 3));
+      });
+      if(!(scData.horseTags||[]).length) t.push(`<div class="tleaf lvl2 tmuted">Inga taggar än — t.ex. Ponny, Stor, Lugn, Hoppar bra. En häst kan ha flera.</div>`);
+      if(can) t.push(`<div class="addhorse lvl2"><input type="text" id="scin_htag" placeholder="Ny tagg"><button class="btn sm" data-sca="htag">+ Tagg</button></div>`);
     }
   }
   can = canP;
@@ -4603,12 +4802,11 @@ function renderSchoolTree(){
     (scData.tasks||[]).forEach(tk=>{
       const key = "tx_"+tk.id;
       if(can && scOpen["edit_t_"+tk.id]){
-        const wdO = [1,2,3,4,5,6,7].map(w=>`<option value="${w}"${w===tk.weekday?" selected":""}>${RS_WD[w]}</option>`).join("");
         const tO = TIME_OPTIONS.map(x=>`<option value="${x}"${x===tk.start_time?" selected":""}>${x}</option>`).join("");
         const dO = TASK_DUR.map(d=>`<option value="${d}"${d===tk.duration_min?" selected":""}>${d} min</option>`).join("");
         t.push(`<div class="editrow lvl1">
           <div class="field"><label class="fld">Namn</label><input type="text" id="sct_name_${tk.id}" value="${esc(tk.name)}"></div>
-          <div class="field"><label class="fld">Veckodag</label><select id="sct_wd_${tk.id}">${wdO}</select></div>
+          ${scTaskDayFields(tk.id, tk)}
           <div class="field"><label class="fld">Starttid</label><select id="sct_time_${tk.id}">${tO}</select></div>
           <div class="field"><label class="fld">Längd</label><select id="sct_dur_${tk.id}">${dO}</select></div>
           ${scDescField("t_"+tk.id, tk.description)}
@@ -4617,7 +4815,7 @@ function renderSchoolTree(){
       } else {
         const btns = can ? `<span class="tbtns"><button class="x" data-sce="t_${tk.id}" title="Ändra">${ic("pencil")}</button><button class="x" data-scd="task:${tk.id}" title="Ta bort">${ic("x")}</button></span>` : "";
         t.push(`<div class="trow lvl1 titem" data-t="${key}">${esc(tk.name)} ${scCaret(key)}${btns}</div>`);
-        t.push(`<div class="tleaf lvl2 tmuted">${RS_WD[tk.weekday]||"?"} ${tk.start_time}–${rsEndTime(tk.start_time, tk.duration_min)}</div>`);
+        t.push(`<div class="tleaf lvl2 tmuted">${esc(taskDaysLabel(tk))} ${tk.start_time}–${rsEndTime(tk.start_time, tk.duration_min)}</div>`);
         t.push(scDescLeaf(tk.description, 2));
       }
       if(scOpen[key]){
@@ -4630,17 +4828,26 @@ function renderSchoolTree(){
           if(freeF.length) t.push(scAddCtl("addsel_tstaff_"+tk.id, "Lägg till personal",
             scCatPick("scin_tstaff_"+tk.id, freeF, scData.staffCats, `<button class="btn sm" data-sca="tstaff:${tk.id}">Lägg till</button>`), 2));
         }
+        // Uppgifter på passet, valfritt tilldelade någon av personalen
+        t.push(`<div class="tleaf lvl2 tmuted" style="font-weight:700">Uppgifter</div>`);
+        const its = taskItemsOf(tk.id);
+        its.forEach(i=>{
+          const who = i.staff_id ? (((scData.staff||[]).find(f=> f.id === i.staff_id)||{}).name || "?") : "";
+          const sel = can ? `<select data-iassign="${i.id}" class="inl"><option value="">Vem som helst</option>${tf2.map(f=>`<option value="${f.id}"${f.id===i.staff_id?" selected":""}>${esc(f.name)}</option>`).join("")}</select>` : (who ? `<span class="meta2">· ${esc(who)}</span>` : "");
+          t.push(`<div class="tleaf lvl2">${ic("list")} ${esc(i.name)} ${sel}${can?`<span class="tbtns"><button class="x" data-scd="titem:${i.id}" title="Ta bort uppgiften">${ic("x")}</button></span>`:""}</div>`);
+        });
+        if(!its.length) t.push(`<div class="tleaf lvl2 tmuted">Inga uppgifter än — t.ex. Mocka alla boxar, Fyll på vatten</div>`);
+        if(can) t.push(`<div class="addhorse lvl2"><input type="text" id="scin_titem_${tk.id}" placeholder="Ny uppgift"><button class="btn sm" data-sca="titem:${tk.id}">+ Uppgift</button></div>`);
       }
     });
     if(!(scData.tasks||[]).length) t.push(`<div class="tleaf lvl1 tmuted">Inga arbetspass än — t.ex. Mocka boxar, Fodra</div>`);
     if(can){
       if(scOpen.add_task){
-        const wdO = [1,2,3,4,5,6,7].map(w=>`<option value="${w}">${RS_WD[w]}</option>`).join("");
         const tO = TIME_OPTIONS.map(x=>`<option value="${x}"${x==="08:00"?" selected":""}>${x}</option>`).join("");
         const dO = TASK_DUR.map(d=>`<option value="${d}"${d===60?" selected":""}>${d} min</option>`).join("");
         t.push(`<div class="editrow lvl1">
           <div class="field"><label class="fld">Nytt arbetspass — namn</label><input type="text" id="scin_task" placeholder="t.ex. Mocka boxar"></div>
-          <div class="field"><label class="fld">Veckodag</label><select id="scin_twd">${wdO}</select></div>
+          ${scTaskDayFields("new", { weekday: 1 })}
           <div class="field"><label class="fld">Starttid</label><select id="scin_ttime">${tO}</select></div>
           <div class="field"><label class="fld">Längd</label><select id="scin_tdur">${dO}</select></div>
           <div class="editbtns"><button class="btn primary sm" data-sca="task">+ Skapa arbetspass</button><button class="btn sm" data-scca="task">Avbryt</button></div>
@@ -4665,12 +4872,17 @@ function renderSchoolTree(){
           <div class="field"><label class="fld">Namn</label><input type="text" id="scn_s_${s.id}" value="${esc(s.name)}"></div>
           <div class="field"><label class="fld">Kategori</label><select id="scc_s_${s.id}">${ecO}</select></div>
           ${scDescField("s_"+s.id, scStudentNote(s.id))}
+          ${(function(){ const n = scStudentNoteRow(s.id) || {}; return `
+          <div class="addhorse"><div class="field" style="flex:1"><label class="fld">Vikt (kg)</label><input type="number" inputmode="decimal" step="0.5" min="0" id="scw_s_${s.id}" value="${n.weight_kg != null ? esc(String(n.weight_kg)) : ""}"></div>
+            <div class="field" style="flex:1"><label class="fld">Längd (cm)</label><input type="number" inputmode="numeric" min="0" id="sch_s_${s.id}" value="${n.height_cm != null ? esc(String(n.height_cm)) : ""}"></div></div>
+          <div class="field"><label class="fld">Bedömning</label><textarea id="sca_s_${s.id}" rows="2" placeholder="t.ex. trygg i trav, behöver en lugn häst">${esc(n.assessment||"")}</textarea></div>`; })()}
           <div class="editbtns"><button class="btn primary sm" data-scs="student:${s.id}">Spara</button><button class="btn sm" data-scc="s_${s.id}">Avbryt</button></div>
         </div>`);
       } else {
         const ecat = ((scData.studentCats||[]).find(c=> c.id === s.category_id)||{}).name;
         t.push(`<div class="trow lvl1 titem" data-t="${key}">${ic("user")} ${esc(s.name)}${mine?` <span class="tagpill">din</span>`:""}${ecat?` <span class="tagpill">${esc(ecat)}</span>`:""} ${scCaret(key)}${can?`<span class="tbtns"><button class="x" data-sce="s_${s.id}" title="Ändra">${ic("pencil")}</button><button class="x" data-scd="student:${s.id}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`);
         t.push(scDescLeaf(scStudentNote(s.id), 2));
+        t.push(scStudentFacts(s.id));
       }
       if(scOpen[key]){
         (s.rs_student_member||[]).forEach(m=> t.push(`<div class="tleaf lvl2">${ic("mail")} ${esc(m.email)}${may?`<span class="tbtns"><button class="x" data-scd="smail:${s.id}|${encodeURIComponent(m.email)}" title="Ta bort">${ic("x")}</button></span>`:""}</div>`));
@@ -4697,6 +4909,7 @@ function renderSchoolTree(){
           <div class="field"><label class="fld">Ny elev — namn</label><input type="text" id="scin_student" placeholder="Elevens namn"></div>
           <div class="field"><label class="fld">Mejladress (förälder/elev)</label><input type="email" id="scin_stmail" placeholder="Valfritt — kan läggas till senare"></div>
           <div class="field"><label class="fld">Lektion</label><select id="scin_stgrp">${gO}</select></div>
+          ${(scData.studentCats||[]).length ? `<div class="field"><label class="fld">Kategori</label><select id="scin_stcat"><option value="">Ingen kategori</option>${(scData.studentCats||[]).map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join("")}</select></div>` : ""}
           <div class="editbtns"><button class="btn primary sm" data-sca="student">+ Skapa elev</button><button class="btn sm" data-scca="student">Avbryt</button></div>
         </div>`);
       } else {
@@ -4782,6 +4995,26 @@ function renderSchoolTree(){
   host.querySelectorAll("[data-sca]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); scAdd(b.getAttribute("data-sca")); });
   host.querySelectorAll("[data-scd]").forEach(b=> b.onclick=(e)=>{ e.stopPropagation(); scDelete(b.getAttribute("data-scd")); });
   host.querySelectorAll(".addhorse, .editrow").forEach(n=> n.onclick=(e)=> e.stopPropagation());
+  // teorifälten visas bara när de behövs; "+ Ny plats…" fäller ut namnfältet
+  host.querySelectorAll("[data-theomode]").forEach(sel=> sel.onchange = ()=>{
+    const k = sel.getAttribute("data-theomode");
+    const reg = el("scg_theoreg_"+k), pl = el("scg_theopl_"+k);
+    if(reg) reg.style.display = sel.value === "regular" ? "" : "none";
+    if(pl) pl.style.display = sel.value === "none" ? "none" : "";
+  });
+  host.querySelectorAll("[data-iassign]").forEach(sel=> sel.onchange = async (e)=>{
+    e.stopPropagation();
+    const r = await db.from("rs_task_item").update({ staff_id: sel.value || null }).eq("id", sel.getAttribute("data-iassign"));
+    if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
+    const it = (scData.taskItems||[]).find(x=> x.id === sel.getAttribute("data-iassign")); if(it) it.staff_id = sel.value || null;
+  });
+  host.querySelectorAll("[data-placesel]").forEach(sel=> sel.onchange = ()=>{
+    const k = sel.getAttribute("data-placesel");
+    const f = el("scg_newplacef_"+k); if(!f) return;
+    const any = [...host.querySelectorAll(`[data-placesel="${k}"]`)].some(s=> s.value === "__new");
+    f.style.display = any ? "" : "none";
+    if(any) el("scg_newplace_"+k).focus();
+  });
 }
 
 async function scSave(spec){
@@ -4797,38 +5030,56 @@ async function scSave(spec){
     return;
   }
   if(kind === "task"){
+    const dv = await scTaskDayVals(id); if(!dv) return;
     const upd = {
       name: (el("sct_name_"+id).value||"").trim() || "Arbetspass",
-      weekday: parseInt(el("sct_wd_"+id).value, 10),
+      ...dv,
       start_time: el("sct_time_"+id).value,
       duration_min: parseInt(el("sct_dur_"+id).value, 10)
     };
     const d = scDescVal("t_"+id); if(d !== undefined) upd.description = d;
     const r = await db.from("rs_task").update(upd).eq("id", id);
-    if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + (/weekdays|task_date/.test(r.error.message) ? "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först." : "")); return; }
     delete scOpen["edit_t_"+id]; delete scOpen["desc_t_"+id];
     await reloadSchool();
     return;
   }
   // Namn + beskrivning-redigeringar (kategori, häst, elev, personalkategori, ledare)
   const simple = { cat:["c_","category"], horse:["h_","rs_horse"], student:["s_","rs_student"], stcat:["sc_","rs_staff_category"], leader:["l_","rs_leader"],
-                   hcat:["hc_","rs_horse_category"], ecat:["ec_","rs_student_category"], instr:["i_","rs_instructor"], place:["pl_","rs_place"] };
+                   hcat:["hc_","rs_horse_category"], ecat:["ec_","rs_student_category"], instr:["i_","rs_instructor"], place:["pl_","rs_place"],
+                   htag:["ht_","rs_horse_tag"] };
   if(simple[kind]){
     const [pfx, tbl] = simple[kind];
     const key = pfx + id;
     const upd = { name: (el("scn_"+key).value||"").trim() || "Namnlös" };
     const d = scDescVal(key);
     if(kind === "student"){
-      // elevens anteckning sparas i skyddade rs_student_note, inte i den öppna tabellen
-      if(d !== undefined){
-        const nr = d ? await db.from("rs_student_note").upsert({ student_id: id, note: d })
-                     : await db.from("rs_student_note").delete().eq("student_id", id);
-        if(nr && nr.error) alert("Anteckningen kunde inte sparas: " + nr.error.message + " (har du kört db/behorigheter.sql?)");
-      }
+      // elevens anteckning, vikt, längd och bedömning sparas i skyddade rs_student_note, inte i den öppna tabellen
+      const old = scStudentNoteRow(id) || {};
+      const num = v=>{ v = (v||"").toString().replace(",", ".").trim(); return v === "" ? null : Number(v); };
+      const row = { student_id: id, note: d !== undefined ? d : (old.note || null),
+                    weight_kg: num((el("scw_"+key)||{}).value), height_cm: num((el("sch_"+key)||{}).value),
+                    assessment: ((el("sca_"+key)||{}).value || "").trim() || null };
+      const tom = !row.note && row.weight_kg == null && row.height_cm == null && !row.assessment;
+      const nr = tom ? (old.student_id ? await db.from("rs_student_note").delete().eq("student_id", id) : null)
+                     : await db.from("rs_student_note").upsert(row);
+      if(nr && nr.error) alert("Anteckningen kunde inte sparas: " + nr.error.message + (/weight|height|assessment/.test(nr.error.message) ? "\n\nKör db/elev-hasttaggar.sql i Supabase → SQL Editor först." : " (har du kört db/behorigheter.sql?)"));
     } else if(d !== undefined) upd.description = d;
     const cEl = el("scc_"+key); if(cEl) upd.category_id = cEl.value || null;
+    const mEl = el("scm_"+key); if(mEl) upd.max_per_day = mEl.value ? parseInt(mEl.value, 10) : null;
     const r = await db.from(tbl).update(upd).eq("id", id);
     if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
+    if(kind === "horse"){
+      // taggarna: byt ut hela kopplingslistan mot det som är ikryssat
+      const boxes = [...document.querySelectorAll(`[data-htag="${id}"]`)];
+      if(boxes.length){
+        const want = boxes.filter(b=> b.checked).map(b=> b.value);
+        const have = horseTags(id).map(x=> x.id);
+        const add = want.filter(x=> !have.includes(x)), del = have.filter(x=> !want.includes(x));
+        if(del.length){ const dr = await db.from("rs_horse_tag_link").delete().eq("horse_id", id).in("tag_id", del); if(dr.error) alert("Taggarna kunde inte sparas: " + dr.error.message); }
+        if(add.length){ const ar = await db.from("rs_horse_tag_link").insert(add.map(tid=> ({ horse_id: id, tag_id: tid }))); if(ar.error) alert("Taggarna kunde inte sparas: " + ar.error.message + "\n\nKör db/elev-hasttaggar.sql i Supabase → SQL Editor först."); }
+      }
+    }
     delete scOpen["edit_"+key]; delete scOpen["desc_"+key];
     await reloadSchool();
     return;
@@ -4842,13 +5093,15 @@ async function scSave(spec){
     duration_min: parseInt(el("scg_dur_"+id).value, 10),
     capacity: parseInt(el("scg_cap_"+id).value, 10),
     horse_rotation: parseInt(el("scg_rot_"+id).value, 10),
-    place_id: el("scg_place_"+id) ? (el("scg_place_"+id).value || null) : undefined,
     has_leaders: el("scg_led_"+id).value === "ja"
   };
-  if(upd.place_id === undefined) delete upd.place_id;
+  const pl = await scResolvePlace("scg_place_"+id, id); if(pl === "__abort") return;
+  upd.place_id = pl;
+  const tv = await scTheoryVals(id, upd.weekday); if(!tv) return;
+  Object.assign(upd, tv);
   const d = scDescVal(id); if(d !== undefined) upd.description = d;
   const r = await db.from("rs_group").update(upd).eq("id", id);
-  if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
+  if(r.error){ alert("Kunde inte spara: " + r.error.message + (/theory/.test(r.error.message) ? "\n\nKör db/teori.sql i Supabase → SQL Editor först." : "")); return; }
   delete scOpen["edit_"+id]; delete scOpen["desc_"+id];
   await reloadSchool();
 }
@@ -4858,16 +5111,21 @@ async function scAdd(spec){
   let r = null;
   if(kind==="group"){ const name=(el("scin_group").value||"").trim();
     if(!name){ await infoDialog("Ge lektionen ett namn.", "Namn saknas"); return; }
+    const wd = parseInt(el("scin_gwd").value, 10);
+    const pl = await scResolvePlace("scin_gplace", "new"); if(pl === "__abort") return;
+    const tv = await scTheoryVals("new", wd); if(!tv) return;
     r = await db.from("rs_group").insert({
       stable_id: scStableId, name,
       category_id: el("scin_gcat").value || null,
-      weekday: parseInt(el("scin_gwd").value, 10),
+      weekday: wd,
       start_time: el("scin_gtime").value,
       duration_min: parseInt(el("scin_gdur").value, 10),
       capacity: parseInt(el("scin_gcap").value, 10),
       horse_rotation: parseInt(el("scin_grot").value, 10),
-      place_id: el("scin_gplace") ? (el("scin_gplace").value || null) : null,
+      place_id: pl,
+      ...tv,
       sort_order: scData.groups.length });
+    if(r.error && /theory/.test(r.error.message)){ alert("Kunde inte skapa lektionen: " + r.error.message + "\n\nKör db/teori.sql i Supabase → SQL Editor först."); return; }
     if(!r.error) delete scOpen.add_group; }
   if(kind==="cat"){ const name=(el("scin_cat").value||"").trim(); if(!name) return;
     r = await db.from("category").insert({ stable_id: scStableId, name, sort_order: scData.cats.length }); }
@@ -4877,7 +5135,7 @@ async function scAdd(spec){
     if(!name){ await infoDialog("Ge eleven ett namn.", "Namn saknas"); return; }
     const email = normEmail(el("scin_stmail").value);
     const gid = el("scin_stgrp").value || null;
-    const ins = await db.from("rs_student").insert({ stable_id: scStableId, name }).select("id").single();
+    const ins = await db.from("rs_student").insert({ stable_id: scStableId, name, category_id: el("scin_stcat") ? (el("scin_stcat").value || null) : null }).select("id").single();
     if(ins.error){ alert("Kunde inte skapa elev: " + ins.error.message); return; }
     if(email.includes("@")){
       const mr = await db.from("rs_student_member").insert({ student_id: ins.data.id, email });
@@ -4925,6 +5183,9 @@ async function scAdd(spec){
     r = await db.from("rs_horse_category").insert({ stable_id: scStableId, name, sort_order: (scData.horseCats||[]).length }); }
   if(kind==="ecat"){ const name=(el("scin_ecat").value||"").trim(); if(!name) return;
     r = await db.from("rs_student_category").insert({ stable_id: scStableId, name, sort_order: (scData.studentCats||[]).length }); }
+  if(kind==="htag"){ const name=(el("scin_htag").value||"").trim(); if(!name) return;
+    r = await db.from("rs_horse_tag").insert({ stable_id: scStableId, name, sort_order: (scData.horseTags||[]).length });
+    if(r.error && /rs_horse_tag/.test(r.error.message)){ alert("Kunde inte skapa taggen: " + r.error.message + "\n\nKör db/elev-hasttaggar.sql i Supabase → SQL Editor först."); return; } }
   if(kind==="place"){ const name=(el("scin_place").value||"").trim(); if(!name) return;
     r = await db.from("rs_place").insert({ stable_id: scStableId, name, sort_order: (scData.places||[]).length }); }
   if(kind==="ghorse"){ const hid = el("scin_ghorse_"+a).value; if(!hid) return;
@@ -4937,13 +5198,18 @@ async function scAdd(spec){
     r = await db.from("rs_group_staff").insert({ group_id: gid, staff_id: a }); }
   if(kind==="task"){ const name=(el("scin_task").value||"").trim();
     if(!name){ await infoDialog("Ge arbetspasset ett namn.", "Namn saknas"); return; }
+    const dv = await scTaskDayVals("new"); if(!dv) return;
     r = await db.from("rs_task").insert({
       stable_id: scStableId, name,
-      weekday: parseInt(el("scin_twd").value, 10),
+      ...dv,
       start_time: el("scin_ttime").value,
       duration_min: parseInt(el("scin_tdur").value, 10),
       sort_order: (scData.tasks||[]).length });
+    if(r.error && /weekdays|task_date/.test(r.error.message)){ alert("Kunde inte skapa passet: " + r.error.message + "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först."); return; }
     if(!r.error) delete scOpen.add_task; }
+  if(kind==="titem"){ const name=(el("scin_titem_"+a).value||"").trim(); if(!name) return;
+    r = await db.from("rs_task_item").insert({ task_id: a, name, sort_order: taskItemsOf(a).length });
+    if(r.error && /rs_task_item/.test(r.error.message)){ alert("Kunde inte lägga till uppgiften: " + r.error.message + "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först."); return; } }
   if(kind==="tstaff"){ const fid = el("scin_tstaff_"+a).value; if(!fid) return;
     r = await db.from("rs_task_staff").insert({ task_id: a, staff_id: fid });
     if(!r.error) sendTaskNotice(fid, (((scData.tasks||[]).find(t2=> t2.id===a))||{}).name || "arbetspass", "added"); }
@@ -5033,6 +5299,7 @@ async function scDelete(spec){
   if(kind==="stcat"){ const c=(scData.staffCats||[]).find(x=>x.id===id); text=`Ta bort personalkategorin "${c?c.name:""}"?`; q=()=>db.from("rs_staff_category").delete().eq("id",id); }
   if(kind==="hcat"){ const c=(scData.horseCats||[]).find(x=>x.id===id); text=`Ta bort hästkategorin "${c?c.name:""}"?`; q=()=>db.from("rs_horse_category").delete().eq("id",id); }
   if(kind==="ecat"){ const c=(scData.studentCats||[]).find(x=>x.id===id); text=`Ta bort elevkategorin "${c?c.name:""}"?`; q=()=>db.from("rs_student_category").delete().eq("id",id); }
+  if(kind==="htag"){ const c=(scData.horseTags||[]).find(x=>x.id===id); text=`Ta bort taggen "${c?c.name:""}"? Den försvinner från alla hästar som har den.`; q=()=>db.from("rs_horse_tag").delete().eq("id",id); }
   if(kind==="place"){ const p=(scData.places||[]).find(x=>x.id===id); text=`Ta bort platsen "${p?p.name:""}"? Lektioner som använder den blir utan plats.`; q=()=>db.from("rs_place").delete().eq("id",id); }
   if(kind==="fmail"){ const j=id.indexOf("|"); const fid=id.slice(0,j), em=decodeURIComponent(id.slice(j+1));
     text=`Ta bort mejladressen ${em}?`;
@@ -5046,6 +5313,7 @@ async function scDelete(spec){
     text=`Ta bort ${f?f.name:"personen"} från lektionen "${g?g.name:""}"?`;
     q=()=>db.from("rs_group_staff").delete().eq("group_id",gid).eq("staff_id",fid); }
   if(kind==="task"){ const tk=(scData.tasks||[]).find(x=>x.id===id); text=`Du håller på att ta bort arbetspasset "${tk?tk.name:""}".`; q=()=>db.from("rs_task").delete().eq("id",id); }
+  if(kind==="titem"){ const it=(scData.taskItems||[]).find(x=>x.id===id); text=`Ta bort uppgiften "${it?it.name:""}"?`; q=()=>db.from("rs_task_item").delete().eq("id",id); }
   if(kind==="tstaff"){ const j=id.indexOf("|"); const tid=id.slice(0,j), fid=id.slice(j+1);
     const f=(scData.staff||[]).find(x=>x.id===fid); const tk=(scData.tasks||[]).find(x=>x.id===tid);
     text=`Ta bort ${f?f.name:"personen"} från arbetspasset "${tk?tk.name:""}"?`;
@@ -5076,6 +5344,9 @@ let scOnlyMine = false;          // visa bara det som rör mig
 let scSel = null;                // valt block: {type:"les"|"task", id, wd}
 let scWeekAsg = [], scWeekAbs = [], scWeekNotes = [], scWeekTAbs = [], scWeekLeave = [], scWeekSwap = [];   // veckans tilldelningar, sjukanmälningar, planeringar, beviljad ledighet, passbyten
 let scNoteOpen = false;               // planerings-textrutan utfälld i panelen?
+let scNewPlaceOpen = false;           // "+ Ny plats" i panelen utfälld?
+let scWeekItemDone = [];              // veckans avbockade uppgifter på arbetspass
+let scClipTask = null;                // kopierat arbetspass (id) som väntar på att klistras in
 
 async function renderSchoolSchedule(stableId){
   scStableId = stableId;
@@ -5084,7 +5355,7 @@ async function renderSchoolSchedule(stableId){
     const st = await db.from("stable").select("*").eq("id", stableId).single(); if(st.error) throw st.error;
     curPerm = await mySchoolPerm(stableId);
     curAdmin = curPerm === "admin";
-    const [g,s,h,ins,gi,gs,sf,gh,gf,tk,tf,pl] = await Promise.all([
+    const [g,s,h,ins,gi,gs,sf,gh,gf,tk,tf,pl,ht,htl,ti] = await Promise.all([
       db.from("rs_group").select("*, category(name)").eq("stable_id", stableId).order("weekday").order("start_time"),
       db.from("rs_student").select("id,name,rs_student_member(email)").eq("stable_id", stableId).order("name"),
       db.from("rs_horse").select("*").eq("stable_id", stableId).order("name"),
@@ -5096,7 +5367,10 @@ async function renderSchoolSchedule(stableId){
       db.from("rs_group_staff").select("*"),
       db.from("rs_task").select("*").eq("stable_id", stableId).order("start_time"),
       db.from("rs_task_staff").select("*"),
-      db.from("rs_place").select("*").eq("stable_id", stableId).order("sort_order")
+      db.from("rs_place").select("*").eq("stable_id", stableId).order("sort_order"),
+      db.from("rs_horse_tag").select("*").eq("stable_id", stableId).order("sort_order"),
+      db.from("rs_horse_tag_link").select("*"),
+      db.from("rs_task_item").select("*")
     ]);
     if(g.error) throw g.error;
     scData = { stable: st.data, groups: g.data, cats: [], students: s.error?[]:s.data, horses: h.error?[]:h.data,
@@ -5104,7 +5378,8 @@ async function renderSchoolSchedule(stableId){
                gstud: gs.error?[]:gs.data, staff: sf.error?[]:sf.data,
                ghorse: gh.error?[]:gh.data, gstaff: gf.error?[]:gf.data,
                tasks: tk.error?[]:tk.data, taskStaff: tf.error?[]:tf.data,
-               places: pl.error?[]:pl.data };
+               places: pl.error?[]:pl.data, horseTags: ht.error?[]:ht.data, horseTagLinks: htl.error?[]:htl.data,
+               taskItems: ti.error?[]:ti.data };
     if(!weekStart2) weekStart2 = startOfWeek(new Date());
     if(!scMonthDate){ const a = new Date(weekStart2); scMonthDate = new Date(a.getFullYear(), a.getMonth(), 1); }
     const MFULL = ["januari","februari","mars","april","maj","juni","juli","augusti","september","oktober","november","december"];
@@ -5186,7 +5461,7 @@ async function renderSchoolSchedule(stableId){
 
 async function drawSchoolWeek(){
   const host = el("scsGrid"); if(!host) return;
-  if(scCalMode === "month"){ drawSchoolMonth(); return; }
+  if(scCalMode === "month"){ await drawSchoolMonth(); return; }
   const gids = scData.groups.map(g=> g.id);
   const startISO = isoDate(weekStart2);
   const endD = new Date(weekStart2); endD.setDate(endD.getDate()+6);
@@ -5209,16 +5484,24 @@ async function drawSchoolWeek(){
     scWeekTAbs = tq.error?[]:tq.data;
     scWeekLeave = lq.error?[]:lq.data;
     scWeekSwap = sq.error?[]:sq.data;
-  } else { scWeekLeave = []; scWeekSwap = []; }
+    const itemIds = (scData.taskItems||[]).map(i=> i.id);
+    if(itemIds.length){
+      const dq = await db.from("rs_task_item_done").select("*").in("item_id", itemIds).gte("work_date", startISO).lte("work_date", endISO);
+      scWeekItemDone = dq.error?[]:dq.data;
+    } else scWeekItemDone = [];
+  } else { scWeekLeave = []; scWeekSwap = []; scWeekItemDone = []; }
   let items = scSchedMode === "lessons"
     ? scData.groups.map(g=> ({ type:"les", o:g, wd:g.weekday, start:timeKey(g), dur:g.duration_min||60 }))
-    : (scData.tasks||[]).map(t=> ({ type:"task", o:t, wd:t.weekday, start:timeKey(t), dur:t.duration_min||60 }));
+    : taskSchedItems();
   if(scOnlyMine) items = items.filter(i=> i.type === "les" ? scMineLesson(i.o) : scMineTask(i.o));
   if(!items.length){
     host.innerHTML = `<div class="empty">${scOnlyMine ? `Inget som rör dig här — välj "Alla ${scSchedMode==="lessons"?"lektioner":"pass"}" för att se allt.` : scSchedMode==="lessons" ? "Inga lektioner än — skapa lektioner under Inställningar." : "Inga arbetspass än — skapa dem under Inställningar."}</div>`;
     el("scsDetail").innerHTML = ""; scLegend(false); return;
   }
-  const days = scCalMode === "day" ? [scDayOff+1] : [1,2,3,4,5,6,7].filter(wd=> items.some(i=> i.wd === wd));
+  const dayISO = wd=>{ const d = new Date(weekStart2); d.setDate(d.getDate()+wd-1); return isoDate(d); };
+  const onDay = (i, wd)=> i.wd === wd && (!i.date || i.date === dayISO(wd));
+  const clip = scClipTask && scSchedMode === "tasks" ? (scData.tasks||[]).find(t=> t.id === scClipTask) : null;
+  const days = scCalMode === "day" ? [scDayOff+1] : [1,2,3,4,5,6,7].filter(wd=> clip || items.some(i=> onDay(i, wd)));
   const tmin = Math.floor(Math.min(...items.map(i=> i.start))/60)*60;
   const tmax = Math.ceil(Math.max(...items.map(i=> i.start+i.dur))/60)*60;
   const PX = 1.1;   // pixlar per minut
@@ -5233,7 +5516,7 @@ async function drawSchoolWeek(){
   days.forEach(wd=>{
     const d = new Date(weekStart2); d.setDate(d.getDate()+wd-1);
     const dISO = isoDate(d);
-    const blocks = items.filter(i=> i.wd === wd).sort((a,b)=> a.start-b.start || a.dur-b.dur);
+    const blocks = items.filter(i=> onDay(i, wd)).sort((a,b)=> a.start-b.start || a.dur-b.dur);
     const lanes = [];   // parallella lektioner läggs sida vid sida
     blocks.forEach(b=>{ let li = lanes.findIndex(e=> e <= b.start); if(li<0){ lanes.push(0); li = lanes.length-1; } lanes[li] = b.start + b.dur; b.lane = li; });
     const nl = Math.max(1, lanes.length);
@@ -5252,23 +5535,28 @@ async function drawSchoolWeek(){
         tint = `background:hsla(${hu},45%,45%,.18);border-color:hsla(${hu},40%,42%,.6)`;
       } else tint = `background:var(--card-2);border-color:var(--muted)`;
       const hasNote = b.type==="les" && scWeekNotes.some(x=> x.group_id===b.o.id && x.lesson_date===dISO && (x.note||"").trim());
-      const clash = b.type==="les" && lessonConflicts(b.o).length > 0;
+      const theory = b.type==="les" && isTheory(b.o, dISO);
+      const clash = b.type==="les" && lessonConflicts(b.o, dISO).length > 0;
       const w = 100/nl;
-      return `<div class="scblk${b.type==="task"?" task":""}${isMine?" mine":""}${isSel?" sel":""}${clash?" clash":""}" data-selblk="${b.type}|${b.o.id}|${wd}"
+      return `<div class="scblk${b.type==="task"?" task":""}${theory?" theory":""}${isMine?" mine":""}${isSel?" sel":""}${clash?" clash":""}" data-selblk="${b.type}|${b.o.id}|${wd}"
         style="top:${(b.start-tmin)*PX}px;height:${Math.max(26, b.dur*PX-2)}px;left:calc(${b.lane*w}% + 3px);width:calc(${w}% - 6px);${tint}">
-        <b>${clash?"⚠ ":""}${esc(b.o.name)}</b>${b.o.start_time}–${rsEndTime(b.o.start_time, b.o.duration_min)}${hasNote?" ✎":""}</div>`;
+        <b>${clash?"⚠ ":""}${theory?"📖 ":""}${esc(b.o.name)}</b>${b.o.start_time}–${rsEndTime(b.o.start_time, b.o.duration_min)}${theory?" · Teori":""}${hasNote?" ✎":""}</div>`;
     }).join("");
     const printBtn = scSchedMode==="lessons" && blocks.length
-      ? `<button class="x dayprint" data-printday="${dISO}|${wd}" title="Skriv ut dagens schema">${ic("printer")}</button>` : "";
+      ? `<button class="x dayprint" data-printday="${dISO}|${wd}" title="Skriv ut dagens schema">${ic("printer")}</button>`
+      : (clip ? `<button class="btn sm daypaste" data-paste="${dISO}" title="Klistra in ${esc(clip.name)} här">Klistra in</button>` : "");
     cols += `<div class="day"><div class="dhead${dISO===tISO?" today":""}">${RS_WD[wd].slice(0,3)} ${d.getDate()}/${d.getMonth()+1}${printBtn}</div>
       <div class="dbody" style="height:${bodyH}px">${hl}${bl}</div></div>`;
   });
-  host.innerHTML = `<div class="scg${scCalMode==="day"?" dayview":""}">${cols}</div>`;
+  const clipBar = clip ? `<div class="msg clipbar">📋 Kopierat: <b>${esc(clip.name)}</b> ${clip.start_time}–${rsEndTime(clip.start_time, clip.duration_min)} — tryck "Klistra in" på dagen det ska läggas. <button class="btn sm" id="clipCancel">Avbryt</button></div>` : "";
+  host.innerHTML = clipBar + `<div class="scg${scCalMode==="day"?" dayview":""}">${cols}</div>`;
+  const cc = el("clipCancel"); if(cc) cc.onclick = ()=>{ scClipTask = null; drawSchoolWeek(); };
+  host.querySelectorAll("[data-paste]").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); pasteTask(b.getAttribute("data-paste")); });
   scLegend(anyMine);
   host.querySelectorAll("[data-selblk]").forEach(n=> n.onclick = ()=>{
     const [tp, id, wd] = n.getAttribute("data-selblk").split("|");
     scSel = { type: tp, id, wd: parseInt(wd,10) };
-    scNoteOpen = false;
+    scNoteOpen = false; scNewPlaceOpen = false;
     host.querySelectorAll(".scblk").forEach(x=> x.classList.remove("sel"));
     n.classList.add("sel");
     drawScsDetail();
@@ -5282,13 +5570,21 @@ async function drawSchoolWeek(){
 }
 
 /* Månadsvy: kalenderöversikt med små chips per dag — klick öppnar dagvyn */
-function drawSchoolMonth(){
+async function drawSchoolMonth(){
   const host = el("scsGrid"); if(!host) return;
   let items = scSchedMode === "lessons"
     ? scData.groups.map(g=> ({ type:"les", o:g, wd:g.weekday, start:timeKey(g) }))
-    : (scData.tasks||[]).map(t=> ({ type:"task", o:t, wd:t.weekday, start:timeKey(t) }));
+    : taskSchedItems();
   if(scOnlyMine) items = items.filter(i=> i.type === "les" ? scMineLesson(i.o) : scMineTask(i.o));
   const first = new Date(scMonthDate.getFullYear(), scMonthDate.getMonth(), 1);
+  // teori som markerats för hand syns bara om månadens tillfällesrader hämtas
+  let mNotes = [];
+  if(scSchedMode === "lessons" && scData.groups.length){
+    const last = new Date(first.getFullYear(), first.getMonth()+1, 0);
+    const nq = await db.from("rs_lesson_note").select("group_id,lesson_date,theory,place_id")
+      .in("group_id", scData.groups.map(g=> g.id)).gte("lesson_date", isoDate(first)).lte("lesson_date", isoDate(last));
+    mNotes = nq.error ? [] : (nq.data||[]);
+  }
   const startO = (first.getDay()+6)%7;
   const daysInMonth = new Date(first.getFullYear(), first.getMonth()+1, 0).getDate();
   const weeks = Math.ceil((startO + daysInMonth) / 7);
@@ -5300,13 +5596,14 @@ function drawSchoolMonth(){
     const inMonth = d.getMonth() === first.getMonth();
     const wd = ((d.getDay()+6)%7)+1;
     const dISO = isoDate(d);
-    const chips = inMonth ? items.filter(x=> x.wd === wd).sort((a,b)=> a.start-b.start).map(x=>{
+    const chips = inMonth ? items.filter(x=> x.wd === wd && (!x.date || x.date === dISO)).sort((a,b)=> a.start-b.start).map(x=>{
       const isMine = x.type==="les" ? scMineLesson(x.o) : scMineTaskOn(x.o, dISO);
       if(isMine) anyMine = true;
       const hu = x.type==="les" ? hashHue(String(x.o.id)) : null;
+      const theory = x.type==="les" && isTheory(x.o, dISO, mNotes);
       const st = isMine ? `background:var(--mine-blk);border:1px solid var(--mine-brd);border-left-width:3px`
         : x.type==="les" ? `background:hsla(${hu},45%,45%,.22)` : `background:var(--card-2);border:1px dashed var(--muted)`;
-      return `<div class="mchip" style="${st}">${x.o.start_time} ${esc(x.o.name)}</div>`;
+      return `<div class="mchip${theory?" theory":""}" style="${st}">${theory?"📖 ":""}${x.o.start_time} ${esc(x.o.name)}</div>`;
     }).join("") : "";
     cells += `<div class="mcell${inMonth?"":" mout"}${dISO===tISO?" mtoday":""}" ${inMonth?`data-mday="${dISO}"`:""}>
       <div class="mnum">${d.getDate()}</div>${chips}</div>`;
@@ -5346,12 +5643,16 @@ function printSchoolDay(dISO, wd){
     const taken = new Set(studs.map(s=> (scWeekAsg.find(x=> x.group_id===g.id && x.lesson_date===dISO && x.student_id===s.id)||{}).horse_id).filter(Boolean));
     const freeH = linked.filter(h=> !taken.has(h.id));
     const leaderBits = [...staffN, ...instrN];
+    const theory = isTheory(g, dISO), pName = placeName(lessonPlaceId(g, dISO));
+    const tRows = theory ? studs.map(s=>{
+      const sick = scWeekAbs.some(x=> x.group_id===g.id && x.lesson_date===dISO && x.student_id===s.id);
+      return `<tr><td>${esc(s.name)}${sick?" (sjukanmäld)":""}</td></tr>`; }).join("") : rows;
     html += `<div class="psec">
-      <h2>${g.start_time}–${rsEndTime(g.start_time, g.duration_min)} · ${esc(g.name)}${g.category&&g.category.name?` (${esc(g.category.name)})`:""}${g.place_id?` · ${esc((((scData.places||[]).find(p=> p.id === g.place_id))||{}).name||"")}`:""}</h2>
+      <h2>${g.start_time}–${rsEndTime(g.start_time, g.duration_min)} · ${esc(g.name)}${g.category&&g.category.name?` (${esc(g.category.name)})`:""}${theory?" · Teori":""}${pName?` · ${esc(pName)}`:""}</h2>
       ${note && (note.note||"").trim() ? `<p class="pnote">Planering: ${esc(note.note)}</p>` : ""}
       <p class="pmeta">Ridlärare/ledare: ${leaderBits.length? leaderBits.map(esc).join(", ") : "–"}</p>
-      ${rows ? `<table><tr><th>Elev</th><th>Häst</th></tr>${rows}</table>` : `<p class="pmeta">Inga elever på lektionen.</p>`}
-      ${freeH.length ? `<p class="pmeta">Ej tilldelade hästar: ${freeH.map(h=> esc(h.name)).join(", ")}</p>` : ""}
+      ${tRows ? (theory ? `<table><tr><th>Elev</th></tr>${tRows}</table>` : `<table><tr><th>Elev</th><th>Häst</th></tr>${tRows}</table>`) : `<p class="pmeta">Inga elever på lektionen.</p>`}
+      ${(freeH.length && !theory) ? `<p class="pmeta">Ej tilldelade hästar: ${freeH.map(h=> esc(h.name)).join(", ")}</p>` : ""}
     </div>`;
   });
   let ps = el("printSheet");
@@ -5386,7 +5687,7 @@ function drawScsDetail(){
     const clashes = (fid, other)=>{
       const s1 = timeKey(tk), e1 = s1 + (tk.duration_min||60);
       const s2 = timeKey(other), e2 = s2 + (other.duration_min||60);
-      return other.id !== tk.id && other.weekday === tk.weekday && s1 < e2 && s2 < e1;
+      return other.id !== tk.id && taskOn(other, dISO) && s1 < e2 && s2 < e1;
     };
     const otherTasksFor = fid=> (scData.taskStaff||[]).filter(x=> x.staff_id === fid)
       .map(x=> (scData.tasks||[]).find(t2=> t2.id === x.task_id)).filter(Boolean);
@@ -5427,19 +5728,66 @@ function drawScsDetail(){
       if(!busy && otherTasksFor(f.id).some(o=> clashes(f.id, o))) busy = "har annat pass";
       return { id: f.id, name: f.name, busy };
     });
+    // Uppgifter på passet: bockas av per datum; den som jobbar passet (eller chef) får bocka
+    const items = taskItemsOf(tk.id);
+    const doneIds = new Set((scWeekItemDone||[]).filter(x=> x.work_date === dISO).map(x=> x.item_id));
+    const iWork = [...myStaff].some(id=> eff.has(id));
+    const canTick = canT || iWork;
+    const itemRows = items.map(i=>{
+      const done = doneIds.has(i.id);
+      const who = i.staff_id ? staffName(i.staff_id) : "";
+      return `<label class="chk sm itemrow${done?" done":""}"><input type="checkbox" data-tick="${i.id}"${done?" checked":""}${canTick?"":" disabled"}>
+        <span class="itemname">${esc(i.name)}</span>${who?`<span class="meta2">· ${esc(who)}</span>`:""}${canT?`<button class="x" data-idel="${i.id}" title="Ta bort uppgiften">${ic("x")}</button>`:""}</label>`;
+    }).join("");
+    const itemAdd = canT ? `<div class="addhorse" style="margin-top:6px"><input type="text" id="scsItemName" placeholder="Ny uppgift, t.ex. Mocka alla boxar"><select id="scsItemStaff"><option value="">Vem som helst</option>${tStaff.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join("")}</select><button class="btn sm" id="scsItemAdd">+ Uppgift</button></div>` : "";
+    const itemsHtml = (items.length || canT) ? `<div style="margin-top:10px"><b style="font-size:.85rem">Uppgifter${items.length?` <span class="meta2">${doneIds.size}/${items.length} klara</span>`:""}</b>
+        ${itemRows || `<div class="meta2" style="margin-top:4px">Inga uppgifter på passet än.</div>`}${itemAdd}</div>` : "";
+    const copyBtn = canT ? `<div class="notifbtns" style="margin-top:10px"><button class="btn sm" id="scsCopyTask">${ic("list")} Kopiera passet</button></div>` : "";
     host.innerHTML = `<div class="card">
       <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
         <b>${esc(tk.name)}</b>
         <span class="meta2">${dateLbl} · ${tk.start_time}–${rsEndTime(tk.start_time, tk.duration_min)}</span>
-        <span class="tagpill">arbetspass</span>
+        <span class="tagpill">${tk.task_date ? "engångspass" : "arbetspass"}</span>
       </div>
       ${tk.description?`<div class="meta2" style="margin-top:4px">${esc(tk.description)}</div>`:""}
       ${wWarns.map(w=> `<div class="msg warn" style="margin-top:8px;margin-bottom:0">⚠ ${esc(w)}</div>`).join("")}
       <div style="margin-top:10px"><b style="font-size:.85rem">Personal</b>
         ${rows || `<div class="msg warn" style="margin-top:6px">⚠ Ingen personal tilldelad än — lägg till under Inställningar → Arbetspass.</div>`}
       </div>
+      ${itemsHtml}
       ${swHtml ? `<div style="margin-top:10px">${swHtml}</div>` : ""}
+      ${copyBtn}
     </div>`;
+    host.querySelectorAll("[data-tick]").forEach(cb=> cb.onchange = async ()=>{
+      const iid = cb.getAttribute("data-tick");
+      const r = cb.checked
+        ? await db.from("rs_task_item_done").insert({ item_id: iid, work_date: dISO, done_by: session.email })
+        : await db.from("rs_task_item_done").delete().eq("item_id", iid).eq("work_date", dISO);
+      if(r.error){ alert("Kunde inte spara: " + r.error.message + "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först."); cb.checked = !cb.checked; return; }
+      scWeekItemDone = (scWeekItemDone||[]).filter(x=> !(x.item_id === iid && x.work_date === dISO));
+      if(cb.checked) scWeekItemDone.push({ item_id: iid, work_date: dISO });
+      drawScsDetail();
+    });
+    host.querySelectorAll("[data-idel]").forEach(b=> b.onclick = async (e)=>{
+      e.preventDefault(); e.stopPropagation();
+      const iid = b.getAttribute("data-idel");
+      const it = items.find(x=> x.id === iid);
+      if(!(await confirmDialog(`Ta bort uppgiften "${it?it.name:""}" från passet?`, { okText:"Ja, ta bort" }))) return;
+      const r = await db.from("rs_task_item").delete().eq("id", iid);
+      if(r.error){ alert("Kunde inte ta bort: " + r.error.message); return; }
+      scData.taskItems = (scData.taskItems||[]).filter(x=> x.id !== iid);
+      drawScsDetail();
+    });
+    const ia = el("scsItemAdd"); if(ia) ia.onclick = async ()=>{
+      const name = (el("scsItemName").value||"").trim();
+      if(!name){ infoDialog("Skriv vad uppgiften är.", "Namn saknas"); return; }
+      const row = { task_id: tk.id, name, staff_id: el("scsItemStaff").value || null, sort_order: items.length };
+      const r = await db.from("rs_task_item").insert(row).select("*").single();
+      if(r.error){ alert("Kunde inte lägga till: " + r.error.message + "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först."); return; }
+      scData.taskItems = (scData.taskItems||[]).concat([r.data || row]);
+      drawScsDetail();
+    };
+    const ct = el("scsCopyTask"); if(ct) ct.onclick = ()=>{ scClipTask = tk.id; drawSchoolWeek(); };
     host.querySelectorAll("[data-swgive]").forEach(b=> b.onclick = ()=>{
       const [tid, dI, fid] = b.getAttribute("data-swgive").split("|");
       swapDialog("give", { stableId: scStableId, taskId: tid, taskName: tk.name, dISO: dI, giverId: fid,
@@ -5471,6 +5819,9 @@ function drawScsDetail(){
     return;
   }
   const g = scData.groups.find(x=> x.id === scSel.id); if(!g){ scSel=null; host.innerHTML=""; return; }
+  const theory = isTheory(g, dISO);
+  const occNote = lessonNote(g.id, dISO);
+  const occPlace = lessonPlaceId(g, dISO);
   const myStud = rsMyStudentIds();
   const gstaffNames = (scData.gstaff||[]).filter(x=> x.group_id===g.id)
     .map(x=> ((scData.staff||[]).find(f=> f.id===x.staff_id)||{}).name).filter(Boolean);
@@ -5488,12 +5839,17 @@ function drawScsDetail(){
     const sick = sickFor(s.id);
     const mine = myStud.has(s.id);
     let horseCell;
-    if(canL){
+    if(theory){
+      horseCell = "";
+    } else if(canL){
       const poolPlus = (a && a.horse_id && !horsePool.some(h=> h.id===a.horse_id))
         ? [...horsePool, scData.horses.find(h=> h.id===a.horse_id)].filter(Boolean) : horsePool;
       const hO = `<option value="">– välj häst –</option>` + poolPlus.map(h=>{
         const other = studs.find(s2=> s2.id !== s.id && (asgFor(s2.id)||{}).horse_id === h.id);
-        return `<option value="${h.id}"${a&&a.horse_id===h.id?" selected":""}>${esc(h.name)}${other?` (${esc(other.name)})`:""}</option>`;
+        // dagsregel från taggarna: hur många andra lektioner hästen redan går i dag
+        const rule = horseDayRule(h.id), nToday = horseLessonsToday(h.id, dISO, g.id);
+        const dayBit = rule && nToday >= rule.max ? ` (${nToday} idag – max ${rule.max})` : (nToday ? ` (${nToday} idag)` : "");
+        return `<option value="${h.id}"${a&&a.horse_id===h.id?" selected":""}>${esc(h.name)}${other?` (${esc(other.name)})`:""}${dayBit}</option>`;
       }).join("");
       horseCell = `<select class="schorse" data-asg="${g.id}|${dISO}|${s.id}">${hO}</select>`;
     } else {
@@ -5506,34 +5862,56 @@ function drawScsDetail(){
   }).join("");
   // Varningar: krockar, dubbeltilldelad häst (tillåtet men flaggas) + elever utan häst
   const warns = [];
-  lessonConflicts(g).forEach(c=>{
-    const both = g.place_id && c.place_id;
-    const pn = both ? (((scData.places||[]).find(p=> p.id === g.place_id)||{}).name || "?") : null;
-    warns.push(`Krockar med ${c.name} (${c.start_time}–${rsEndTime(c.start_time, c.duration_min)})${both ? ` — samma plats (${pn})` : " — ange olika platser om de ska gå samtidigt"}`);
+  lessonConflicts(g, dISO).forEach(c=>{
+    const cP = lessonPlaceId(c, dISO);
+    const both = occPlace && cP;
+    warns.push(`Krockar med ${c.name} (${c.start_time}–${rsEndTime(c.start_time, c.duration_min)})${both ? ` — samma plats (${placeName(occPlace)})` : " — ange olika platser om de ska gå samtidigt"}`);
   });
   const byHorse = {};
-  studs.forEach(s=>{ if(sickFor(s.id)) return; const a=asgFor(s.id); if(a && a.horse_id){ (byHorse[a.horse_id]=byHorse[a.horse_id]||[]).push(s.name); } });
+  if(!theory) studs.forEach(s=>{ if(sickFor(s.id)) return; const a=asgFor(s.id); if(a && a.horse_id){ (byHorse[a.horse_id]=byHorse[a.horse_id]||[]).push(s.name); } });
   Object.entries(byHorse).filter(([,names])=> names.length>1).forEach(([hid,names])=>{
     const hn = ((scData.horses.find(h=> h.id===hid)||{}).name)||"?";
     warns.push(`${hn} är tilldelad flera elever samtidigt: ${names.join(", ")}`);
   });
-  const noHorse = studs.filter(s=> !sickFor(s.id) && !((asgFor(s.id)||{}).horse_id));
+  // taggregel "max N lektioner per dag": varna när den här lektionen gör att hästen går över
+  if(!theory) Object.keys(byHorse).concat(studs.map(s=> (asgFor(s.id)||{}).horse_id).filter(Boolean)).filter((v,i,arr)=> arr.indexOf(v) === i).forEach(hid=>{
+    const rule = horseDayRule(hid); if(!rule) return;
+    const n = horseLessonsToday(hid, dISO, g.id) + 1;
+    if(n > rule.max) warns.push(`${((scData.horses.find(h=> h.id===hid)||{}).name)||"?"} går ${n} lektioner i dag — max ${rule.max} enligt taggen ${rule.tag}`);
+  });
+  const noHorse = theory ? [] : studs.filter(s=> !sickFor(s.id) && !((asgFor(s.id)||{}).horse_id));
   if(noHorse.length && studs.length) warns.push(noHorse.length===1
     ? `${noHorse[0].name} har ingen häst tilldelad än`
     : `${noHorse.length} elever har ingen häst tilldelad än: ${noHorse.map(s=>s.name).join(", ")}`);
   const takenIds = new Set(studs.map(s=> (asgFor(s.id)||{}).horse_id).filter(Boolean));
   const freeHorses = linkedHorses.filter(h=> !takenIds.has(h.id));
-  const adminBtns = canL ? `<div class="notifbtns" style="margin-top:10px">
+  const adminBtns = (canL && !theory) ? `<div class="notifbtns" style="margin-top:10px">
       <button class="btn sm" data-copyw="${g.id}|${dISO}">Kopiera förra veckan</button>
       <button class="btn sm" data-rot="${g.id}|${dISO}">Rotera hästar</button>
     </div>` : "";
+  // Det här tillfället: teori ja/nej (när lektionen har teori) och plats (när det finns platser)
+  let occCtl = "";
+  if(canL){
+    const ruleLbl = g.theory_mode === "regular" ? `Enligt regeln (${theoryByRule(g, dISO) ? "teori" : "ridning"})` : "Ridning";
+    const ov = occNote ? occNote.theory : null;
+    const theoSel = g.theory_mode !== "none" ? `<span class="meta2" style="min-width:48px">Teori</span>
+      <select id="scsTheo"><option value="">${ruleLbl}</option><option value="1"${ov===true?" selected":""}>Ja, teori</option><option value="0"${ov===false?" selected":""}>Nej, ridning</option></select>` : "";
+    const defP = theory ? (g.theory_place_id || null) : (g.place_id || null);
+    const placeSel = ((scData.places||[]).length || defP) ? `<span class="meta2" style="min-width:48px">Plats</span>
+      <select id="scsPlace"><option value="">Standard${defP ? ` (${esc(placeName(defP)||"?")})` : ""}</option>${(scData.places||[]).map(p=>`<option value="${p.id}"${occNote && occNote.place_id===p.id?" selected":""}>${esc(p.name)}</option>`).join("")}<option value="__new">+ Ny plats…</option></select>` : "";
+    if(theoSel || placeSel) occCtl = `<div style="margin-top:10px"><b style="font-size:.85rem">Det här tillfället</b>
+      <div class="addhorse" style="margin-top:6px">${theoSel}${placeSel}</div>
+      ${scNewPlaceOpen ? `<div class="addhorse" style="margin-top:6px"><input type="text" id="scsNewPlace" placeholder="Namn på den nya platsen"><button class="btn sm" id="scsNewPlaceOk">Spara plats</button></div>` : ""}
+    </div>`;
+  }
   host.innerHTML = `<div class="card">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
       <b>${esc(g.name)}</b>
       <span class="meta2">${dateLbl} · ${g.start_time}–${rsEndTime(g.start_time, g.duration_min)}</span>
       ${g.category&&g.category.name?`<span class="tagpill">${esc(g.category.name)}</span>`:""}
-      ${g.place_id?`<span class="tagpill">${esc((((scData.places||[]).find(p=> p.id === g.place_id))||{}).name||"?")}</span>`:""}
-      <span class="meta2" style="margin-left:auto">byte efter ${g.horse_rotation} ggr</span>
+      ${theory?`<span class="tagpill st-pend">📖 Teori</span>`:""}
+      ${occPlace?`<span class="tagpill">${esc(placeName(occPlace)||"?")}${occNote && occNote.place_id?" (ändrad)":""}</span>`:""}
+      ${theory?"":`<span class="meta2" style="margin-left:auto">byte efter ${g.horse_rotation} ggr</span>`}
     </div>
     ${g.description?`<div class="meta2" style="margin-top:4px">${esc(g.description)}</div>`:""}
     <div class="meta2" style="margin-top:4px">Ridlärare: ${leaders.length? leaders.map(esc).join(", ") : "ingen kopplad än"}</div>
@@ -5551,12 +5929,13 @@ function drawScsDetail(){
       }
       return h + `</div>`;
     })()}
+    ${occCtl}
     ${warns.map(w=> `<div class="msg warn" style="margin-top:8px;margin-bottom:0">⚠ ${esc(w)}</div>`).join("")}
     <div id="scsRotWarn"></div>
-    <div style="margin-top:10px"><b style="font-size:.85rem">Elever & hästar</b>
+    <div style="margin-top:10px"><b style="font-size:.85rem">${theory ? "Elever" : "Elever & hästar"}</b>
       ${rows || `<div class="empty">Inga elever på lektionen än — lägg till i Inställningar.</div>`}
     </div>
-    ${linkedHorses.length ? `<div style="margin-top:10px"><b style="font-size:.85rem">Ej tilldelade hästar</b>
+    ${(linkedHorses.length && !theory) ? `<div style="margin-top:10px"><b style="font-size:.85rem">Ej tilldelade hästar</b>
       <div class="meta2" style="margin-top:2px">${freeHorses.length ? freeHorses.map(h=> esc(h.name)).join(", ") : "– alla lektionens hästar är tilldelade"}</div></div>` : ""}
     ${adminBtns}
   </div>`;
@@ -5564,14 +5943,47 @@ function drawScsDetail(){
   const ncBtn = el("scsNoteCancel"); if(ncBtn) ncBtn.onclick = ()=>{ scNoteOpen = false; drawScsDetail(); };
   const nsBtn = el("scsNoteSave"); if(nsBtn) nsBtn.onclick = async ()=>{
     const val = (el("scsNote").value||"").trim();
+    const keep = occNote && (occNote.theory != null || occNote.place_id);   // raden bär även teori/plats
     let r;
-    if(val) r = await db.from("rs_lesson_note").upsert({ group_id: g.id, lesson_date: dISO, note: val });
+    if(val || keep) r = await db.from("rs_lesson_note").upsert({ group_id: g.id, lesson_date: dISO, note: val || null });
     else r = await db.from("rs_lesson_note").delete().eq("group_id", g.id).eq("lesson_date", dISO);
     if(r.error){ alert("Kunde inte spara planeringen: " + r.error.message + " (har du kört db/planering.sql?)"); return; }
+    const old = occNote || {};
     scWeekNotes = scWeekNotes.filter(x=> !(x.group_id===g.id && x.lesson_date===dISO));
-    if(val) scWeekNotes.push({ group_id: g.id, lesson_date: dISO, note: val });
+    if(val || keep) scWeekNotes.push({ ...old, group_id: g.id, lesson_date: dISO, note: val || null });
     scNoteOpen = false;
     drawSchoolWeek();
+  };
+  // tillfällets teori/plats sparas i samma rad som planeringen
+  const saveOcc = async (patch)=>{
+    const row = { group_id: g.id, lesson_date: dISO, ...patch };
+    const r = await db.from("rs_lesson_note").upsert(row);
+    if(r.error){ alert("Kunde inte spara: " + r.error.message + "\n\nKör db/teori.sql i Supabase → SQL Editor först."); return false; }
+    const old = occNote || {};
+    scWeekNotes = scWeekNotes.filter(x=> !(x.group_id===g.id && x.lesson_date===dISO));
+    scWeekNotes.push({ ...old, ...row });
+    return true;
+  };
+  const tSel = el("scsTheo"); if(tSel) tSel.onchange = async ()=>{
+    const v = tSel.value;
+    if(await saveOcc({ theory: v === "" ? null : v === "1" })) drawSchoolWeek();
+  };
+  const pSel = el("scsPlace"); if(pSel) pSel.onchange = async ()=>{
+    if(pSel.value === "__new"){ scNewPlaceOpen = true; drawScsDetail(); const i = el("scsNewPlace"); if(i) i.focus(); return; }
+    if(await saveOcc({ place_id: pSel.value || null })) drawSchoolWeek();
+  };
+  const npBtn = el("scsNewPlaceOk"); if(npBtn) npBtn.onclick = async ()=>{
+    const name = (el("scsNewPlace").value||"").trim();
+    if(!name){ infoDialog("Skriv namnet på platsen.", "Plats saknas"); return; }
+    let pid = ((scData.places||[]).find(p=> (p.name||"").toLowerCase() === name.toLowerCase())||{}).id;
+    if(!pid){
+      const r = await db.from("rs_place").insert({ stable_id: scStableId, name, sort_order: (scData.places||[]).length }).select("id").single();
+      if(r.error){ alert("Kunde inte skapa platsen: " + r.error.message); return; }
+      pid = r.data.id;
+      scData.places = (scData.places||[]).concat([{ id: pid, stable_id: scStableId, name, sort_order: (scData.places||[]).length }]);
+    }
+    scNewPlaceOpen = false;
+    if(await saveOcc({ place_id: pid })) drawSchoolWeek();
   };
   host.querySelectorAll("[data-asg]").forEach(sel=> sel.onchange = async ()=>{
     const [gid, dI, sid] = sel.getAttribute("data-asg").split("|");
@@ -5621,7 +6033,26 @@ function drawScsDetail(){
     if(r.error){ alert("Kunde inte rotera: " + r.error.message); return; }
     drawSchoolWeek();
   });
-  loadRotationHints(g, dISO);
+  if(!theory) loadRotationHints(g, dISO);
+}
+
+/* Klistra in ett kopierat arbetspass som ett engångspass på ett datum, med samma personal och uppgifter */
+async function pasteTask(dISO){
+  const src2 = (scData.tasks||[]).find(t=> t.id === scClipTask); if(!src2) return;
+  const d = new Date(dISO + "T00:00:00");
+  if(!(await confirmDialog(`Lägga in ${src2.name} ${src2.start_time}–${rsEndTime(src2.start_time, src2.duration_min)} ${RS_WD[wdOfISO(dISO)].toLowerCase()} ${d.getDate()}/${d.getMonth()+1}? Det blir ett eget pass bara det datumet, med samma personal och uppgifter.`, { title:"Klistra in pass", okText:"Ja, lägg in", primary:true }))) return;
+  const wd = wdOfISO(dISO);
+  const r = await db.from("rs_task").insert({ stable_id: scStableId, name: src2.name, description: src2.description || null,
+    weekday: wd, weekdays: [wd], task_date: dISO, start_time: src2.start_time, duration_min: src2.duration_min,
+    sort_order: (scData.tasks||[]).length }).select("id").single();
+  if(r.error){ alert("Kunde inte klistra in: " + r.error.message + "\n\nKör db/arbetspass3.sql i Supabase → SQL Editor först."); return; }
+  const nid = r.data.id;
+  const staff = (scData.taskStaff||[]).filter(x=> x.task_id === src2.id).map(x=> ({ task_id: nid, staff_id: x.staff_id }));
+  if(staff.length){ const sr = await db.from("rs_task_staff").insert(staff); if(sr.error) alert("Passet skapades, men personalen kunde inte kopieras: " + sr.error.message); }
+  const items = taskItemsOf(src2.id).map((i, k)=> ({ task_id: nid, name: i.name, staff_id: i.staff_id || null, sort_order: k }));
+  if(items.length){ const ir = await db.from("rs_task_item").insert(items); if(ir.error) alert("Passet skapades, men uppgifterna kunde inte kopieras: " + ir.error.message); }
+  scClipTask = null; scSel = null;
+  renderSchoolSchedule(scStableId);
 }
 
 /* Rotationshint: räkna hur många gånger i rad varje elev ridit sin nuvarande häst.

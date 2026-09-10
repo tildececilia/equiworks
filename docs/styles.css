@@ -515,3 +515,20 @@ select.schorse{width:auto;min-width:130px;padding:7px 10px;font-size:.9rem}
 .profstat{flex:1;background:var(--card-2);border-radius:10px;padding:10px 8px;text-align:center;display:flex;flex-direction:column;gap:2px}
 .profstat b{font-size:1.4rem;line-height:1.1;color:var(--accent)}
 .profstat span{font-size:.72rem;color:var(--muted);font-weight:600}
+
+/* Teorilektioner: prickad ram i vecko-, dag- och månadsvyn */
+.scblk.theory{border-style:dotted;border-width:2px}
+.mchip.theory{outline:1px dotted var(--muted);outline-offset:-1px}
+
+/* Hästtaggar: kryssrutor i formuläret, dämpad pill i raden */
+.tagchk{display:flex;flex-wrap:wrap;gap:4px 12px}
+.tagchk .chk.sm{padding:2px 0}
+.tagpill.tagx{background:var(--card-2);color:var(--muted)}
+
+/* Arbetspass: uppgiftsrader, klistra in-läge */
+.itemrow{padding:4px 0;gap:8px;align-items:center}
+.itemrow.done .itemname{text-decoration:line-through;opacity:.6}
+.itemrow .x{margin-left:auto}
+.clipbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.dhead .daypaste{margin-left:6px;padding:2px 8px;font-size:.7rem}
+select.inl{font-size:.8rem;padding:2px 6px;margin-left:6px}
