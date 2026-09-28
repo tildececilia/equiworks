@@ -2484,6 +2484,7 @@ function groupTurnNumber(monday){
   return Math.floor((weekIndexOf(monday) + (schedCtx.stable.rotation_offset||0)) / n);
 }
 
+const FAIR_EXTRA_FROM = "2026-10-26";   // v44 2026: ny fördelning av extrapass (per profil) — tidigare veckor rörs inte
 function computeTargets(monday){
   const duty = dutyGroupNow(monday);
   if(!duty) return null;
@@ -2509,6 +2510,36 @@ function computeTargets(monday){
     // alla extrapass på samma hästar (5 hästar, 8 fodringar: tre fick 2, två fick 1,
     // och samma tre fick extrapassen i utsläpp, städ och spolspiltor också).
     // Pekaren flyttas fram ett varv per gruppens tur, så det roterar mellan perioderna.
+    if(isoDate(monday) >= FAIR_EXTRA_FROM){
+      // Regeln från v44 2026: hästen är enheten även för extrapassen (en profil med två hästar
+      // får dem dubbelt så ofta över tid), men hästlistan varvas profil för profil
+      // (Carlsson, Josefsson, Stenberg, Carlsson, Josefsson) så att två extrapass i rad —
+      // i samma kategori eller i nästa — hamnar på olika profiler när det går.
+      // varje profils hästar sprids jämnt över listan (två hästar hamnar en fjärdedel resp. tre
+      // fjärdedelar in), så inte en profils hästar ligger intill varandra
+      const byProf = new Map();
+      horses.forEach(h=>{ if(!byProf.has(h.profileId)) byProf.set(h.profileId, []); byProf.get(h.profileId).push(h); });
+      const keyed = []; let pi = 0;
+      byProf.forEach(l=>{ l.forEach((h, i)=> keyed.push({ h, key: (i + 0.5) / l.length, pi })); pi++; });
+      keyed.sort((a,b)=> (a.key - b.key) || (a.pi - b.pi));
+      const woven = keyed.map(x=> x.h);
+      const sumRem = catOrder.reduce((a,k)=> a + cats[k].total % nH, 0);
+      let ptr = sumRem ? (((turn * sumRem) % nH) + nH) % nH : 0;
+      catOrder.forEach(catKey=>{
+        const total = cats[catKey].total;
+        const base = Math.floor(total / nH);
+        const rem  = total % nH;
+        const extra = new Set();
+        for(let k=0;k<rem;k++) extra.add((ptr + k) % nH);
+        ptr = (ptr + rem) % nH;
+        woven.forEach((h, idx)=>{
+          const t = base + (extra.has(idx) ? 1 : 0);
+          const pc = perProfile[h.profileId].byCat;
+          if(!pc[catKey]) pc[catKey] = { name:cats[catKey].name, target:0, actual:0 };
+          pc[catKey].target += t;
+        });
+      });
+    } else {
     const sumRem = catOrder.reduce((a,k)=> a + cats[k].total % nH, 0);
     let ptr = sumRem ? (((turn * sumRem) % nH) + nH) % nH : 0;
     catOrder.forEach(catKey=>{
@@ -2525,6 +2556,7 @@ function computeTargets(monday){
         pc[catKey].target += t;
       });
     });
+    }
   }
   return { duty, perProfile, cats };
 }
