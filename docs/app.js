@@ -79,11 +79,46 @@ function rotationGroups(groups){
   return med.length ? med : all;   // ingen ikryssad → alla, så schemat aldrig blir tomt
 }
 function monthIndexOf(d){ return (d.getFullYear()-ROT_ANCHOR.getFullYear())*12 + d.getMonth(); }
+/* ---- Specialperioder (jul/nyår m.m.): ordinarie schema pausat ----
+   Under perioden gäller ett pass en dag bara om det finns en rad i pass_date, det finns ingen
+   jourgrupp/måltal/deadline för de dagarna, och veckor vars söndag ligger i perioden hoppas
+   över i rotationen — gruppen som stod på tur får nästa vanliga helg. */
+let curPeriods = [];   // specialperioder för stallet man tittar på (tom lista = inga)
+const REL_OPEN = { always:true, open:true, started:true, freeForAll:true, order:[] };
+async function loadPeriods(stableId){
+  const r = await db.from("special_period").select("*").eq("stable_id", stableId).order("start_date");
+  curPeriods = r.error ? [] : (r.data||[]);   // tabellen saknas tills db/specialperiod.sql körts — då finns inga perioder
+  return curPeriods;
+}
+function periodOn(dISO, periods){ return (periods||curPeriods).find(p=> p.start_date <= dISO && dISO <= p.end_date) || null; }
+/* Är veckan pausad? (dess söndag ligger i en period som pausar rotationen) */
+function weekPaused(monday, periods){
+  const s = startOfWeek(monday); s.setDate(s.getDate()+6);
+  const sISO = isoDate(s);
+  return (periods||curPeriods).some(p=> p.pause_rotation !== false && p.start_date <= sISO && sISO <= p.end_date);
+}
+/* Veckans plats i rotationen: pausade veckor före den räknas inte */
+function rotWeekIndex(monday, periods){
+  const ps = periods||curPeriods;
+  const m = startOfWeek(monday), mISO = isoDate(m);
+  const seen = new Set();
+  ps.forEach(p=>{
+    if(p.pause_rotation === false) return;
+    const end = new Date(p.end_date + "T00:00:00");
+    for(let w = startOfWeek(new Date(p.start_date + "T00:00:00")); w <= end; w.setDate(w.getDate()+7)){
+      const wISO = isoDate(w);
+      if(wISO < mISO && weekPaused(w, ps)) seen.add(wISO);
+    }
+  });
+  return weekIndexOf(m) - seen.size;
+}
+function fmtDM(iso){ const d = new Date(iso + "T00:00:00"); return d.getDate() + "/" + (d.getMonth()+1); }
 /* Vilken grupp har jouren ett visst datum — per vecka eller per kalendermånad */
-function dutyGroupForDate(d, groups, offset, basis){
+function dutyGroupForDate(d, groups, offset, basis, periods){
   const list = rotationGroups(groups);
   const n = list.length; if(!n) return null;
-  const idx = basis === "month" ? monthIndexOf(d) + (offset||0) : weekIndexOf(startOfWeek(d)) + (offset||0);
+  if(basis !== "month" && weekPaused(d, periods)) return null;   // specialperiod: ingen jourgrupp
+  const idx = basis === "month" ? monthIndexOf(d) + (offset||0) : rotWeekIndex(d, periods) + (offset||0);
   return list[((idx % n) + n) % n];
 }
 /* Periodens start (måndag eller den 1:a) enligt stallets rotationsbas */
@@ -99,7 +134,7 @@ function periodLabel(d){
 /* Hur många gånger jourgruppen haft ansvaret — styr vems tur det är att välja först */
 function periodTurnNumber(ps){
   const n = rotationGroups(schedCtx.groups).length || 1;
-  const idx = schedCtx.stable.rotation_basis === "month" ? monthIndexOf(ps) : weekIndexOf(startOfWeek(ps));
+  const idx = schedCtx.stable.rotation_basis === "month" ? monthIndexOf(ps) : rotWeekIndex(ps);
   return Math.floor((idx + (schedCtx.stable.rotation_offset||0)) / n);
 }
 /* Hästarna i periodens jourgrupp, i den ordning de får välja (ordningen flyttas ett steg per period) */
@@ -119,6 +154,7 @@ function dutyHorseOrder(ps){
 function releaseInfo(d){
   const st = (schedCtx && schedCtx.stable) || {};
   if(!harPerioder(st) || st.release_days == null) return { always:true, open:true, started:true, freeForAll:true, order:[] };
+  if(st.rotation_basis !== "month" && weekPaused(d)) return REL_OPEN;   // specialperiod: inget släpp, ingen turordning
   const ps = periodStart(d);
   const openAt = new Date(ps); openAt.setDate(openAt.getDate() - st.release_days); openAt.setHours(0,0,0,0);
   const now = Date.now();
@@ -142,6 +178,7 @@ function releaseInfo(d){
 function deadlinePassed(d){
   const st = (schedCtx && schedCtx.stable) || {};
   if(st.deadline_days == null || !harPerioder(st)) return false;
+  if(st.rotation_basis !== "month" && weekPaused(d)) return false;   // specialperiod: ingen deadline
   const dl = new Date(periodStart(d)); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
   return Date.now() >= dl.getTime();
 }
@@ -165,13 +202,15 @@ function dutyGroupNow(d){
 }
 /* Kör stallet i perioder alls? */
 function harPerioder(st){ st = st || (schedCtx && schedCtx.stable) || {}; return st.rotation_basis !== "none"; }
-function passApplies(p, d){
+function hasPassDate(pid, iso){
+  const hit = a=> (a||[]).some(x=> x.pass_id === pid && x.pass_date === iso);
+  return hit(schedCtx && schedCtx.passDates) || hit(stData && stData.passDates);
+}
+function passApplies(p, d, periods){
   // specialpass gäller bara sina egna datum
-  if(p.is_special){
-    const iso = isoDate(d);
-    return ((stData && stData.passDates) || (schedCtx && schedCtx.passDates) || [])
-      .some(x=> x.pass_id === p.id && x.pass_date === iso);
-  }
+  if(p.is_special) return hasPassDate(p.id, isoDate(d));
+  // specialperiod: de vanliga dagreglerna är pausade — passet gäller bara de dagar som lagts upp för perioden
+  if(!p.is_task){ const iso = isoDate(d); if(periodOn(iso, periods)) return hasPassDate(p.id, iso); }
   const g = d.getDay(), wknd = (g===0 || g===6), wd = ((g+6)%7)+1;   // wd: mån=1 … sön=7
   // varannan vecka: jämna eller ojämna veckonummer
   if(p.week_parity === "even" && isoWeekNumber(d) % 2 !== 0) return false;
@@ -975,6 +1014,7 @@ let stOnlyProfile = null;   // profilsidan: visa bara den här profilen
 
 async function reloadStableData(){
   const sid = stStableId;
+  await loadPeriods(sid);
   const [g,c,p,pr,ad] = await Promise.all([
     db.from("duty_group").select("*").eq("stable_id", sid).order("sort_order"),
     db.from("category").select("*").eq("stable_id", sid).order("sort_order"),
@@ -1309,7 +1349,7 @@ function renderStableTree(){
       if(grupper && perioder){
       const nuIdx = (function(){
         const n = rotG.length; if(!n) return -1;
-        const idx = basis === "month" ? monthIndexOf(new Date()) : weekIndexOf(startOfWeek(new Date()));
+        const idx = basis === "month" ? monthIndexOf(new Date()) : rotWeekIndex(new Date());
         return (((idx + (st.rotation_offset||0)) % n) + n) % n;
       })();
       const nuNamn = nuIdx >= 0 ? (rotG[nuIdx]||{}).name : null;
@@ -1354,6 +1394,7 @@ function renderStableTree(){
       </div>`);
       }
     }
+    curPeriods.forEach(sp=> t.push(`<div class="tleaf lvl1 tmuted">📅 <b>${esc(sp.name)}</b> ${fmtDM(sp.start_date)}–${fmtDM(sp.end_date)} — specialperiod, ordinarie schema pausat</div>`));
     t.push(`<div class="trow lvl1" data-t="pass">${ic("clock")} Pass ${caret("pass")}</div>`);
     if(stOpen.pass){
       const vanliga = (stData.passes||[]).filter(p=> !p.is_task);
@@ -1460,7 +1501,7 @@ function renderStableTree(){
     const n = rot.length; if(!n) return;
     const vald = rot.findIndex(g=> g.id === gid); if(vald < 0) return;
     const basis = (stStableRow||{}).rotation_basis === "month" ? "month" : "week";
-    const idx = basis === "month" ? monthIndexOf(new Date()) : weekIndexOf(startOfWeek(new Date()));
+    const idx = basis === "month" ? monthIndexOf(new Date()) : rotWeekIndex(new Date());
     const offset = (((vald - idx) % n) + n) % n;   // så att den valda gruppen har jouren just nu
     const r = await db.from("stable").update({ rotation_offset: offset }).eq("id", stStableId);
     if(r.error){ alert("Kunde inte spara: " + r.error.message); return; }
@@ -1572,12 +1613,13 @@ async function groupStatsDialog(gid){
     .map(p=> ({ p, n: (p.horse||[]).filter(h=> h.group_id === gid).length }))
     .filter(x=> x.n > 0);
   if(!profs.length){ infoDialog("Inga hästar i gruppen än.", "Statistik"); return; }
-  const b = await db.from("booking").select("profile_id,pass_def(category_id)").eq("stable_id", stStableId);
+  const b = await db.from("booking").select("profile_id,pass_date,pass_def(category_id,is_task)").eq("stable_id", stStableId);
   if(b.error){ alert("Kunde inte hämta statistik: " + b.error.message); return; }
   const counts = {}; profs.forEach(x=> counts[x.p.id] = {});
   const catKeys = new Set();
   (b.data||[]).forEach(bk=>{
     if(!(bk.profile_id in counts)) return;
+    if(!(bk.pass_def && bk.pass_def.is_task) && periodOn(bk.pass_date)) return;   // specialperiod har egen statistik
     const k = (bk.pass_def && bk.pass_def.category_id) || "none";
     catKeys.add(k);
     counts[bk.profile_id][k] = (counts[bk.profile_id][k]||0) + 1;
@@ -1804,6 +1846,7 @@ async function renderSchedule(stableId){
       passDates = pdq.error?[]:pdq.data; passGroups = pgq.error?[]:pgq.data;
     }
     const cq = await db.from("category").select("*").eq("stable_id", stableId).order("sort_order");
+    await loadPeriods(stableId);
     schedCtx = { stable: st.data, groups: g.data, passes: sortPassesByTime(p.data), profiles: pr.data, myProfiles,
                  passDates, passGroups, cats: cq.error?[]:cq.data,
                  actingProfileId: myProfiles[0] ? myProfiles[0].id : null };
@@ -1848,6 +1891,18 @@ function drawWeekNav(){
     const span = schedMode === "day" ? [dayD] : schedMode === "month" ? [schedMonth] : [weekStart2, end];
     span.forEach(d=>{ const g = dutyGroupNow(d); if(g && !duties.some(x=> x.group.id === g.id)) duties.push({ group:g, label:"" }); });
   }
+  // specialperioder: periodens namn visas där det ordinarie schemat är pausat
+  const perChips = [];
+  const addPer = (d, label)=>{ const p = periodOn(isoDate(d)); if(p && !perChips.some(x=> x.name === p.name && x.label === label)) perChips.push({ name:p.name, label }); };
+  if(schedMode === "month"){
+    const sista = new Date(schedMonth.getFullYear(), schedMonth.getMonth()+1, 0);
+    for(let m = startOfWeek(schedMonth); m <= sista; m.setDate(m.getDate()+7)){
+      if(!weekPaused(m)) continue;
+      const s = new Date(m); s.setDate(s.getDate()+6);
+      addPer(s, "v." + isoWeekNumber(m));
+    }
+  } else if(schedMode === "day") addPer(dayD, "");
+  else for(let i=0;i<7;i++){ const d = new Date(weekStart2); d.setDate(d.getDate()+i); addPer(d, ""); }
   const lbl = schedMode === "day" ? `${DAY_NAMES[dayD.getDay()]} ${dayD.getDate()}/${dayD.getMonth()+1}`
     : schedMode === "month" ? `${MFULL[schedMonth.getMonth()]} ${schedMonth.getFullYear()}`
     : `Vecka ${isoWeekNumber(weekStart2)}`;
@@ -1866,8 +1921,9 @@ function drawWeekNav(){
       <button class="btn sm" id="wNext">Nästa ›</button>
     </div>
     ${sub?`<div class="muted" style="font-size:.82rem;margin-top:6px">${esc(sub)}</div>`:""}
-    ${duties.length?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">${
-      duties.map(x=>`<span class="dutychip" style="background:${x.group.color||'#4e9e6e'}">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}${esc(x.group.name)}</span>`).join("")}</div>`:""}`;
+    ${(duties.length || perChips.length)?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">${
+      duties.map(x=>`<span class="dutychip" style="background:${x.group.color||'#4e9e6e'}">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}${esc(x.group.name)}</span>`).join("")}${
+      perChips.map(x=>`<span class="dutychip perchip">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}📅 ${esc(x.name)}</span>`).join("")}</div>`:""}`;
   el("segSchedMode").querySelectorAll("[data-sm]").forEach(b=> b.onclick = ()=>{
     const m = b.getAttribute("data-sm");
     if(schedMode === m) return;
@@ -1964,8 +2020,9 @@ async function drawMonthGrid(keepScroll){
     const inMonth = d.getMonth() === first.getMonth();
     const dISO = isoDate(d);
     let need = 0, got = 0, mine = 0;
+    const pausad = weekPaused(d);
     if(inMonth) schedCtx.passes.forEach(p=>{
-      if(!passApplies(p, d)) return;
+      if((p.is_task && pausad) || !passApplies(p, d)) return;
       const list = map[p.id+"|"+dISO] || [];
       need += (p.capacity||1); got += Math.min(list.length, p.capacity||1);
       mine += list.filter(bk=> myIds.has(bk.profile_id)).length;
@@ -1998,7 +2055,7 @@ async function horseStatsDialog(group){
     if(h.group_id === group.id) horses.push({ id:h.id, name:h.name||"Häst", profileId:pr.id, profileName:pr.name });
   }));
   if(!horses.length){ infoDialog("Inga hästar i " + group.name + " än.", "Statistik"); return; }
-  const b = await db.from("booking").select("profile_id,pass_def(category_id)").eq("stable_id", schedCtx.stable.id);
+  const b = await db.from("booking").select("profile_id,pass_date,pass_def(category_id,is_task)").eq("stable_id", schedCtx.stable.id);
   if(b.error){ alert("Kunde inte hämta statistik: " + b.error.message); return; }
   const nHorses = {};
   horses.forEach(h=> nHorses[h.profileId] = (nHorses[h.profileId]||0) + 1);
@@ -2006,6 +2063,7 @@ async function horseStatsDialog(group){
   horses.forEach(h=> perHorse[h.id] = {});
   (b.data||[]).forEach(bk=>{
     if(!nHorses[bk.profile_id]) return;
+    if(!(bk.pass_def && bk.pass_def.is_task) && periodOn(bk.pass_date)) return;   // specialperiod har egen statistik
     const k = (bk.pass_def && bk.pass_def.category_id) || "none";
     catKeys.add(k);
     horses.filter(h=> h.profileId === bk.profile_id)
@@ -2125,12 +2183,12 @@ function schedNotices(days, map, passes, myIds){
     }
   }
   // deadline: alla pass tagna X dagar innan perioden börjar
-  if(st.deadline_days != null && harPerioder(st)){
+  if(st.deadline_days != null && harPerioder(st) && !(st.rotation_basis !== "month" && weekPaused(d0))){
     const ps = periodStart(d0);
     const dl = new Date(ps); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
     const kvar = [];
     days.forEach(d=> passes.forEach(p=>{
-      if(!passApplies(p, d)) return;
+      if(periodOn(isoDate(d)) || !passApplies(p, d)) return;
       const n = (map[p.id+"|"+isoDate(d)]||[]).length;
       if(n < (p.capacity||1)) kvar.push(1);
     }));
@@ -2176,8 +2234,10 @@ async function drawGrid(keepScroll){
     // alla pass, även uppgifter — annars hamnar uppgiftsbokningar i "Övrigt"
     const passCat = {}; (schedCtx.passes||[]).forEach(p=> passCat[p.id] = p.category_id || "none");
     const raknade = new Set();
+    const arUppg = {}; (schedCtx.passes||[]).forEach(p=> arUppg[p.id] = !!p.is_task);
     const rakna = bk=>{
       if(raknade.has(bk.id)) return; raknade.add(bk.id);
+      if(bk.pass_date && !arUppg[bk.pass_id] && periodOn(bk.pass_date)) return;   // specialperiodens pass hör inte till jourveckans måltal
       const prof = tgt.perProfile[bk.profile_id]; if(!prof) return;
       const key = passCat[bk.pass_id] || "none";
       if(!prof.byCat[key]) prof.byCat[key] = { name:(tgt.cats[key]?tgt.cats[key].name:"Övrigt"), target:0, actual:0 };
@@ -2199,14 +2259,16 @@ async function drawGrid(keepScroll){
   // "endast mina pass": bara de dagar och pass där jag själv står bokad
   const mineOn = schedOnlyMine && myIds.size > 0;
   const harMitt = (pid, dISO)=> (map[pid+"|"+dISO]||[]).some(bk=> myIds.has(bk.profile_id));
-  let visPass = passes, visDays = days;
+  // kolumner bara för pass som gäller någon av dagarna (specialperioder och specialpass har egna dagar)
+  const galler = passes.filter(p=> days.some(d=> passApplies(p, d)));
+  let visPass = galler.length ? galler : passes, visDays = days;
   if(mineOn){
-    visPass = passes.filter(p=> days.some(d=> harMitt(p.id, isoDate(d))));
+    visPass = visPass.filter(p=> days.some(d=> harMitt(p.id, isoDate(d))));
     visDays = days.filter(d=> visPass.some(p=> harMitt(p.id, isoDate(d))));
   }
   const mineChk = `<label class="chk sm schedmine"><input type="checkbox" id="schMine"${
     schedOnlyMine?" checked":""}> Visa endast mina pass</label>`;
-  let html = schedNotices(days, map, passes, myIds);
+  let html = periodBanner(days) + schedNotices(days, map, passes, myIds);
   html += `<div class="card schedcard" style="overflow-x:auto">`;
   if(mineOn && !visDays.length){
     html += `<div class="empty">Du står inte på något pass ${schedMode==="day"?"den här dagen":"den här veckan"}.</div>`;
@@ -2237,9 +2299,10 @@ async function drawGrid(keepScroll){
   });
   html += `</div>` + mineChk + `</div>`;
   }
-  html += await taskList(tasks, days, myIds, mineOn);
+  if(!weekPaused(days[0])) html += await taskList(tasks, days, myIds, mineOn);   // pausad vecka: inga uppgifter
   if(schedPassSel) html += passPanel(schedPassSel, map, days);
   html += renderStats(tgt, myIds, days[0]);   // statistiken under schemat
+  html += await periodStatsCard(days, myIds);   // specialperiod: egen statistik, alla profiler
   const ordHtml = releaseOrderBlock(days[0], myIds);
   if(ordHtml) html += `<div class="card">${ordHtml}</div>`;
   html += `<div class="card">
@@ -2340,17 +2403,18 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
   const isPast = dISO < tISO;
   const mineHere = list.some(bk=> myIds.has(bk.profile_id));
   const mayTake = !schedCtx.actingProfileId || passOpenTo(p, schedCtx.actingProfileId);
-  const rel = releaseInfo(d);
+  const specDay = !!periodOn(dISO);   // specialperiod: öppet, ingen deadline
+  const rel = specDay ? REL_OPEN : releaseInfo(d);
   const released = rel.open || curAdmin;
   const canBook = schedCtx.actingProfileId && !full && !isPast && mayTake && released;
   const chips = list.map(bk=>{
     const mine = myIds.has(bk.profile_id);
     const canReq = !isPast && schedCtx.actingProfileId;
     const reqAttrs = canReq ? ` data-req="${bk.id}|${bk.profile_id}|${mine?1:0}" data-pinfo="${esc(p.name)}|${dISO}"` : "";
-    const efterDl = deadlinePassed(d) && !curAdmin;
-    const canRemove = (mine || curAdmin) && !isPast && !efterDl;
+    const efterDl = !specDay && deadlinePassed(d) && !curAdmin;
+    const canRemove = (specDay ? curAdmin : (mine || curAdmin)) && !isPast && !efterDl;
     const who = (bk.profile && bk.profile.name) || "?";
-    const chipTitle = canReq ? (mine ? (efterDl ? "Deadline har passerat — ge bort passet i stället för att ta bort det" : "Ge bort passet") : "Fråga om att ta över") : "";
+    const chipTitle = canReq ? (mine ? (efterDl ? "Deadline har passerat — ge bort passet i stället för att ta bort det" : (specDay ? "Passet är fördelat i förväg — klicka för att ge bort det" : "Ge bort passet")) : "Fråga om att ta över") : "";
     return `<span class="schip${canReq?" clickable":""}"${reqAttrs} style="${profChipStyle(bk.profile_id)}" title="${esc(chipTitle)}"><span class="cn">${esc(who)}</span>${canRemove?`<button class="x2" data-cancel="${bk.id}" data-cinfo="${esc(p.name)}|${dISO}" data-cprof="${esc(who)}" data-cmine="${mine?1:0}" title="${mine?"Avboka":"Ta bort "+esc(who)+" från passet"}">✕</button>`:""}</span>`;
   }).join("");
   let emptyTxt = "–", emptyTitle = "";
@@ -2378,7 +2442,9 @@ function scheduleCell(p, d, dISO, map, myIds, tISO){
 
 async function bookCell(passId, dISO){
   const pid = schedCtx.actingProfileId; if(!pid) return;
-  const relB = releaseInfo(new Date(dISO + "T00:00:00"));
+  const passB = schedCtx.passes.find(x=> x.id === passId);
+  const specDay = !!(passB && !passB.is_task && periodOn(dISO));   // pass i en specialperiod: ingen jourgrupp, inget släpp
+  const relB = specDay ? REL_OPEN : releaseInfo(new Date(dISO + "T00:00:00"));
   if(!relB.open && !curAdmin){
     await infoDialog(relB.started
       ? `Passen släpps en i taget just nu. Din tur är ${shortWhen(relB.mineAt)}.`
@@ -2397,7 +2463,7 @@ async function bookCell(passId, dISO){
   let asked = false;
   // Är det min grupps jourvecka? Annars: fråga innan bokning.
   const duty = dutyGroupNow(weekStart2);
-  if(duty){
+  if(duty && !specDay){
     const prof = (schedCtx.profiles||[]).find(x=> x.id === pid);
     const myGroups = new Set(((prof && prof.horse) || []).map(h=> h.group_id).filter(Boolean));
     if(!myGroups.has(duty.id)){
@@ -2429,6 +2495,13 @@ async function cancelBooking(id, info, profName, mine){
   if(info && !curAdmin){
     const j0 = info.lastIndexOf("|");
     const d0 = new Date(info.slice(j0+1) + "T00:00:00");
+    // uppgifter bokas på veckans måndag och hör till jourveckan, även om måndagen ligger i en specialperiod
+    const arUppg0 = (schedCtx.passes||[]).some(p=> p.is_task && p.name === info.slice(0, j0));
+    const sp0 = arUppg0 ? null : periodOn(isoDate(d0));
+    if(sp0){
+      await infoDialog(`Passen under ${sp0.name} är fördelade i förväg, så passet går inte att ta bort. Klicka på ditt namn i schemat för att ge bort det till någon annan i stället.`, "Fördelat i förväg");
+      return;
+    }
     if(deadlinePassed(d0)){
       await infoDialog("Deadline för perioden har passerat, så passet går inte att ta bort. Klicka på ditt namn i schemat för att ge bort det till någon annan i stället.", "För sent att avboka");
       return;
@@ -2467,7 +2540,7 @@ function categoryTotals(monday){
     // en uppgift gäller hela perioden — den räknas en gång, inte en gång per dag
     let applicableDays = 0;
     if(p.is_task) applicableDays = 1;
-    else days.forEach(d=>{ if(passApplies(p, d)) applicableDays++; });
+    else days.forEach(d=>{ if(!periodOn(isoDate(d)) && passApplies(p, d)) applicableDays++; });
     const platser = applicableDays * (p.capacity || 1);
     if(platser === 0) return;
     const key = p.category_id || "none";
@@ -2481,7 +2554,7 @@ function categoryTotals(monday){
 // Vilken gång i ordningen har gruppen jobbat (0, 1, 2 …) – styr rotationen av extrapass.
 function groupTurnNumber(monday){
   const n = rotationGroups(schedCtx.groups).length; if(!n) return 0;
-  return Math.floor((weekIndexOf(monday) + (schedCtx.stable.rotation_offset||0)) / n);
+  return Math.floor((rotWeekIndex(monday) + (schedCtx.stable.rotation_offset||0)) / n);
 }
 
 const FAIR_EXTRA_FROM = "2026-10-26";   // v44 2026: ny fördelning av extrapass (per profil) — tidigare veckor rörs inte
@@ -2631,6 +2704,61 @@ function releaseOrderBlock(d0, myIds){
       <span class="meta2">${rel.freeForAll ? "alla i stallet kan boka" : "turordning gäller de första " + rel.order.length + " dygnen"}</span>
       <span class="on-more">Ordning ›</span></div>`}
   </div>`;
+}
+/* Rutan överst när man tittar på dagar i en specialperiod */
+function periodBanner(days){
+  const pers = [];
+  days.forEach(d=>{ const p = periodOn(isoDate(d)); if(p && !pers.includes(p)) pers.push(p); });
+  return pers.map(p=> `<div class="card"><div class="msg ok" style="margin:0">📅 <b>${esc(p.name)}</b> ${fmtDM(p.start_date)}–${fmtDM(p.end_date)} — det ordinarie jourschemat är pausat de här dagarna och passen är fördelade i förväg. Vill du byta? Klicka på ditt namn i schemat för att ge bort passet.</div></div>`).join("");
+}
+/* Statistik för en specialperiod: alla profiler, antal av varje pass under hela perioden */
+async function periodStatsCard(days, myIds){
+  const pers = [];
+  days.forEach(d=>{ const p = periodOn(isoDate(d)); if(p && !pers.includes(p)) pers.push(p); });
+  let out = "";
+  for(const per of pers){
+    const bq = await db.from("booking").select("pass_id,pass_date,profile_id")
+      .eq("stable_id", schedCtx.stable.id).gte("pass_date", per.start_date).lte("pass_date", per.end_date);
+    const bks = bq.error ? [] : (bq.data||[]);
+    const inPer = x=> x.pass_date >= per.start_date && x.pass_date <= per.end_date;
+    const pDates = (schedCtx.passDates||[]).filter(inPer);
+    const passes = (schedCtx.passes||[]).filter(p=> !p.is_task && (pDates.some(x=> x.pass_id === p.id) || bks.some(b2=> b2.pass_id === p.id)));
+    if(!passes.length) continue;
+    const cnt = {};
+    bks.forEach(b2=>{
+      if(!passes.some(p=> p.id === b2.pass_id)) return;
+      const c = cnt[b2.profile_id] = cnt[b2.profile_id] || {};
+      c[b2.pass_id] = (c[b2.pass_id]||0) + 1;
+    });
+    const profs = (schedCtx.profiles||[]).slice().sort((a,b)=> (a.name||"").localeCompare(b.name||"", "sv"));
+    const head = passes.map(p=>{
+      const hu = (schedCtx.catTint || {})[p.category_id];
+      return `<th${hu != null ? ` style="background:hsla(${hu},45%,45%,.12)"` : ""}>${esc(p.name)}</th>`;
+    }).join("");
+    const rows = profs.map(pr=>{
+      const c = cnt[pr.id] || {};
+      const tot = passes.reduce((a,p)=> a + (c[p.id]||0), 0);
+      return `<tr class="${myIds.has(pr.id)?"me":""}"><th scope="row">${profDot(pr.id)}<span class="stnamn">${esc(pr.name)}</span></th>${
+        passes.map(p=> `<td class="${c[p.id]?"kvar":"tom"}">${c[p.id]||0}</td>`).join("")}<td class="${tot?"kvar":"tom"}"><b>${tot}</b></td></tr>`;
+    }).join("");
+    // sista raden: bokat av det som behövs per pass
+    const sum = passes.map(p=>{
+      const need = pDates.filter(x=> x.pass_id === p.id).length * (p.capacity||1);
+      const got = bks.filter(b2=> b2.pass_id === p.id).length;
+      return { need, got };
+    });
+    const totGot = sum.reduce((a,x)=> a + x.got, 0), totNeed = sum.reduce((a,x)=> a + x.need, 0);
+    const sumRow = `<tr><th scope="row"><span class="stnamn">Bokat av behov</span></th>${
+      sum.map(x=> `<td class="${x.need && x.got >= x.need ? "done" : "kvar"}">${x.got}/${x.need}</td>`).join("")}<td class="${totNeed && totGot >= totNeed ? "done" : "kvar"}"><b>${totGot}/${totNeed}</b></td></tr>`;
+    out += `<div class="card">
+      <p class="sub" style="margin:0 0 8px">${esc(per.name)} <span class="sectionhint">— period ${fmtDM(per.start_date)}–${fmtDM(per.end_date)}, alla profiler</span></p>
+      <div class="stattblwrap"><table class="stattbl">
+        <thead><tr><th scope="col">Profil</th>${head}<th>Totalt</th></tr></thead>
+        <tbody>${rows}${sumRow}</tbody></table></div>
+      <p class="meta2" style="margin:8px 0 0">Antal pass per profil under hela perioden. De räknas inte in i jourgruppernas måltal eller gruppstatistik.</p>
+    </div>`;
+  }
+  return out;
 }
 function renderStats(tgt, myIds, d0){
   if(!tgt) return "";
@@ -3770,6 +3898,10 @@ async function getDeadlineWarnings(){
         : (function(){ const e = new Date(ps); e.setDate(e.getDate()+6); return e; })();
       const dl = new Date(ps); dl.setDate(dl.getDate() - st.deadline_days); dl.setHours(0,0,0,0);
       if(now < dl) continue;
+      // specialperioder: pausade veckor har ingen deadline, och periodens dagar räknas inte
+      const spq = await db.from("special_period").select("*").eq("stable_id", st.id);
+      const pers = spq.error ? [] : (spq.data||[]);
+      if(basis === "week" && weekPaused(ps, pers)) continue;
       const [pq, bq] = await Promise.all([
         db.from("pass_def").select("*").eq("stable_id", st.id),
         db.from("booking").select("pass_id,pass_date").eq("stable_id", st.id).gte("pass_date", isoDate(ps)).lte("pass_date", isoDate(pe))
@@ -3781,7 +3913,7 @@ async function getDeadlineWarnings(){
       for(let d = new Date(ps); d <= pe; d.setDate(d.getDate()+1)){
         const dISO = isoDate(d);
         passes.forEach(p2=>{
-          if(p2.is_task || !passApplies(p2, d)) return;
+          if(p2.is_task || periodOn(dISO, pers) || !passApplies(p2, d, [])) return;
           saknas += Math.max(0, (p2.capacity||1) - (cnt[p2.id+"|"+dISO]||0));
         });
       }

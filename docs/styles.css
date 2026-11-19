@@ -532,3 +532,6 @@ select.schorse{width:auto;min-width:130px;padding:7px 10px;font-size:.9rem}
 .clipbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 8px}
 .dhead .daypaste{margin-left:6px;padding:2px 8px;font-size:.7rem}
 select.inl{font-size:.8rem;padding:2px 6px;margin-left:6px}
+
+/* Specialperiod: neutral bricka i veckonavigeringen */
+.dutychip.perchip{background:var(--card-2);color:var(--ink);border:1px solid var(--line)}
