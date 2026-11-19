@@ -1885,7 +1885,7 @@ function drawWeekNav(){
     const sista = new Date(schedMonth.getFullYear(), schedMonth.getMonth()+1, 0);
     for(let m = startOfWeek(schedMonth); m <= sista; m.setDate(m.getDate()+7)){
       const g = dutyGroupNow(m); if(!g) continue;
-      duties.push({ group:g, label:"v." + isoWeekNumber(m) });
+      duties.push({ group:g, label:"v." + isoWeekNumber(m), ord:m.getTime() });
     }
   } else {
     const span = schedMode === "day" ? [dayD] : schedMode === "month" ? [schedMonth] : [weekStart2, end];
@@ -1893,13 +1893,13 @@ function drawWeekNav(){
   }
   // specialperioder: periodens namn visas där det ordinarie schemat är pausat
   const perChips = [];
-  const addPer = (d, label)=>{ const p = periodOn(isoDate(d)); if(p && !perChips.some(x=> x.name === p.name && x.label === label)) perChips.push({ name:p.name, label }); };
+  const addPer = (d, label, ord)=>{ const p = periodOn(isoDate(d)); if(p && !perChips.some(x=> x.name === p.name && x.label === label)) perChips.push({ name:p.name, label, ord:ord||0 }); };
   if(schedMode === "month"){
     const sista = new Date(schedMonth.getFullYear(), schedMonth.getMonth()+1, 0);
     for(let m = startOfWeek(schedMonth); m <= sista; m.setDate(m.getDate()+7)){
       if(!weekPaused(m)) continue;
       const s = new Date(m); s.setDate(s.getDate()+6);
-      addPer(s, "v." + isoWeekNumber(m));
+      addPer(s, "v." + isoWeekNumber(m), m.getTime());
     }
   } else if(schedMode === "day") addPer(dayD, "");
   else for(let i=0;i<7;i++){ const d = new Date(weekStart2); d.setDate(d.getDate()+i); addPer(d, ""); }
@@ -1922,8 +1922,9 @@ function drawWeekNav(){
     </div>
     ${sub?`<div class="muted" style="font-size:.82rem;margin-top:6px">${esc(sub)}</div>`:""}
     ${(duties.length || perChips.length)?`<div style="margin-top:8px;display:flex;gap:6px;justify-content:center;flex-wrap:wrap">${
-      duties.map(x=>`<span class="dutychip" style="background:${x.group.color||'#4e9e6e'}">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}${esc(x.group.name)}</span>`).join("")}${
-      perChips.map(x=>`<span class="dutychip perchip">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}📅 ${esc(x.name)}</span>`).join("")}</div>`:""}`;
+      duties.concat(perChips).sort((a,b)=> (a.ord||0) - (b.ord||0)).map(x=> x.group
+        ? `<span class="dutychip" style="background:${x.group.color||'#4e9e6e'}">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}${esc(x.group.name)}</span>`
+        : `<span class="dutychip perchip">${x.label?`<span class="dw">${esc(x.label)}</span>`:""}📅 ${esc(x.name)}</span>`).join("")}</div>`:""}`;
   el("segSchedMode").querySelectorAll("[data-sm]").forEach(b=> b.onclick = ()=>{
     const m = b.getAttribute("data-sm");
     if(schedMode === m) return;
@@ -2020,9 +2021,8 @@ async function drawMonthGrid(keepScroll){
     const inMonth = d.getMonth() === first.getMonth();
     const dISO = isoDate(d);
     let need = 0, got = 0, mine = 0;
-    const pausad = weekPaused(d);
     if(inMonth) schedCtx.passes.forEach(p=>{
-      if((p.is_task && pausad) || !passApplies(p, d)) return;
+      if(p.is_task || !passApplies(p, d)) return;   // uppgifter gäller hela veckan och räknas inte per dag
       const list = map[p.id+"|"+dISO] || [];
       need += (p.capacity||1); got += Math.min(list.length, p.capacity||1);
       mine += list.filter(bk=> myIds.has(bk.profile_id)).length;
