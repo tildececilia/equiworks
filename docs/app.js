@@ -91,13 +91,15 @@ async function loadPeriods(stableId){
   return curPeriods;
 }
 function periodOn(dISO, periods){ return (periods||curPeriods).find(p=> p.start_date <= dISO && dISO <= p.end_date) || null; }
-/* Är veckan pausad? (dess söndag ligger i en period som pausar rotationen) */
+/* Hör veckan till en specialperiod? (dess söndag ligger i perioden) — då finns ingen jourgrupp,
+   inga måltal och inga uppgifter den veckan, oavsett hur rotationen räknas */
 function weekPaused(monday, periods){
   const s = startOfWeek(monday); s.setDate(s.getDate()+6);
   const sISO = isoDate(s);
-  return (periods||curPeriods).some(p=> p.pause_rotation !== false && p.start_date <= sISO && sISO <= p.end_date);
+  return (periods||curPeriods).some(p=> p.start_date <= sISO && sISO <= p.end_date);
 }
-/* Veckans plats i rotationen: pausade veckor före den räknas inte */
+/* Veckans plats i rotationen. pause_rotation = true: periodens veckor hoppas över, så gruppen som
+   stod på tur får första helgen efteråt. false: kalendern rullar på som om grupperna haft sina veckor. */
 function rotWeekIndex(monday, periods){
   const ps = periods||curPeriods;
   const m = startOfWeek(monday), mISO = isoDate(m);
